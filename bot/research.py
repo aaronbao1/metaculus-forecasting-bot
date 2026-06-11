@@ -52,11 +52,25 @@ async def _search_llm_research(question: dict, cfg: BotConfig) -> str:
     from forecasting_tools import GeneralLlm
     llm = GeneralLlm(model=f"openrouter/{cfg.search_model}", temperature=0.1)
     args = _prompt_args(question)
+    # return_exceptions so one track's failure neither discards the other
+    # track's report nor orphans its still-running task
     current, historical = await asyncio.gather(
         llm.invoke(RESEARCH_PROMPT_CURRENT.format(**args)),
-        llm.invoke(RESEARCH_PROMPT_HISTORICAL.format(**args)))
-    return (f"### Outside view (historical)\n{historical}\n\n"
-            f"### Inside view (current)\n{current}")
+        llm.invoke(RESEARCH_PROMPT_HISTORICAL.format(**args)),
+        return_exceptions=True)
+    parts = []
+    if isinstance(historical, BaseException):
+        logger.warning("search-LLM historical track failed: %s", historical)
+    else:
+        parts.append(f"### Outside view (historical)\n{historical}")
+    if isinstance(current, BaseException):
+        logger.warning("search-LLM current track failed: %s", current)
+    else:
+        parts.append(f"### Inside view (current)\n{current}")
+    if not parts:
+        raise RuntimeError(
+            f"both search-LLM tracks failed: {historical}; {current}")
+    return "\n\n".join(parts)
 
 
 async def _markets_research(question: dict, cfg: BotConfig) -> str:
@@ -65,9 +79,17 @@ async def _markets_research(question: dict, cfg: BotConfig) -> str:
 
 
 async def run_research(question: dict, cfg: BotConfig) -> ResearchResult:
-    names = list(cfg.research_providers)
-    # late-bind through module attributes so tests can monkeypatch:
-    fns = [globals()[f"_{name}_research"] for name in names]
+    # late-bind through module attributes so tests can monkeypatch; a typo'd
+    # provider name in config must not break run_research's never-raise
+    # contract for every question in the run
+    names, fns = [], []
+    for name in cfg.research_providers:
+        fn = globals().get(f"_{name}_research")
+        if fn is None:
+            logger.error("unknown research provider %r — skipping", name)
+            continue
+        names.append(name)
+        fns.append(fn)
 
     async def guarded(name, fn):
         return await asyncio.wait_for(

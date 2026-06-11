@@ -36,21 +36,26 @@ class MarketQuote:
     url: str
 
 
-async def _get_json(url: str, params: dict):
+async def _get_json(url: str, params: dict, client=None):
     import httpx
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S,
-                                 follow_redirects=True) as client:
+    if client is not None:
         resp = await client.get(url, params=params)
+        resp.raise_for_status()
+        return resp.json()
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S,
+                                 follow_redirects=True) as one_shot:
+        resp = await one_shot.get(url, params=params)
         resp.raise_for_status()
         return resp.json()
 
 
-async def fetch_manifold(query: str, limit: int = 5) -> list[MarketQuote]:
+async def fetch_manifold(query: str, limit: int = 5,
+                         client=None) -> list[MarketQuote]:
     data = await _get_json(MANIFOLD_SEARCH, params={
         "term": query, "limit": limit, "filter": "open",
-        "sort": "liquidity", "contractType": "BINARY"})
+        "sort": "liquidity", "contractType": "BINARY"}, client=client)
     quotes = []
-    for m in data:
+    for m in (data or []):
         try:
             if m.get("isResolved") or m.get("probability") is None:
                 continue
@@ -65,15 +70,22 @@ async def fetch_manifold(query: str, limit: int = 5) -> list[MarketQuote]:
     return quotes
 
 
-async def fetch_polymarket(query: str, limit: int = 5) -> list[MarketQuote]:
+async def fetch_polymarket(query: str, limit: int = 5,
+                           client=None) -> list[MarketQuote]:
     data = await _get_json(POLYMARKET_SEARCH, params={
-        "q": query, "limit_per_type": limit, "events_status": "active"})
+        "q": query, "limit_per_type": limit, "events_status": "active"},
+        client=client)
     quotes = []
-    for event in data.get("events", []):
-        if not event.get("active", True) or event.get("closed", False):
+    for event in ((data or {}).get("events") or []):
+        try:
+            if not event.get("active", True) or event.get("closed", False):
+                continue
+            event_url = f"https://polymarket.com/event/{event.get('slug', '')}"
+            markets = event.get("markets") or []
+        except Exception as e:
+            logger.warning("skipping malformed Polymarket event: %s", e)
             continue
-        event_url = f"https://polymarket.com/event/{event.get('slug', '')}"
-        for m in event.get("markets", []):
+        for m in markets:
             try:
                 if not m.get("active", True) or m.get("closed", False):
                     continue
@@ -105,9 +117,15 @@ def _fmt_volume(v: float) -> str:
 
 
 def _fmt_prob(p: float | None) -> str:
+    """Never render a non-degenerate price as a literal 0%/100% — a false
+    certainty anchor is exactly the failure mode market data can cause."""
     if p is None:
         return "n/a"
     pct = p * 100.0
+    if 0.0 <= pct < 0.1:
+        return "<0.1%"
+    if 99.9 < pct <= 100.0:
+        return ">99.9%"
     return f"{pct:.1f}%" if pct < 1 or pct > 99 else f"{pct:.0f}%"
 
 
@@ -128,9 +146,13 @@ def format_market_section(quotes: list[MarketQuote]) -> str:
 async def market_research(question_text: str) -> str:
     """Top markets across both venues, by volume. Empty string if none —
     the research compositor then simply omits this provider."""
-    results = await asyncio.gather(
-        fetch_manifold(question_text), fetch_polymarket(question_text),
-        return_exceptions=True)
+    import httpx
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S,
+                                 follow_redirects=True) as client:
+        results = await asyncio.gather(
+            fetch_manifold(question_text, client=client),
+            fetch_polymarket(question_text, client=client),
+            return_exceptions=True)
     quotes: list[MarketQuote] = []
     for src, r in zip(("Manifold", "Polymarket"), results):
         if isinstance(r, BaseException):

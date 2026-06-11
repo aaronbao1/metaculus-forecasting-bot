@@ -98,7 +98,7 @@ class CalibratedEnsembleBot:
         results = await asyncio.gather(*jobs, return_exceptions=True)
         texts, kept = [], []
         for r, m in zip(results, models):
-            if isinstance(r, Exception):
+            if isinstance(r, BaseException):
                 logger.warning("member %s failed: %s", m, r)
             else:
                 texts.append(r)
@@ -176,31 +176,43 @@ class CalibratedEnsembleBot:
                                      member_models=kept)
 
 
-def build_framework_bot(cfg: BotConfig | None = None):
-    """Factory returning a forecasting_tools.ForecastBot subclass instance
-    wrapping CalibratedEnsembleBot. Inside a factory so importing this module
-    never requires forecasting-tools at test time."""
+_pchip_distribution_class = None
+
+
+def build_pchip_distribution_class():
+    """Cached forecasting_tools.NumericDistribution subclass whose get_cdf()
+    uses our PCHIP+standardized construction. Module-level (not closed over
+    inside build_framework_bot) so tests can exercise it directly.
+
+    get_cdf() is the method the framework actually calls when aggregating and
+    publishing (the .cdf property is deprecated and never read by the
+    framework — overriding only .cdf silently ships the default CDF).
+    Delegates to the framework construction for log-scaled (zero_point) and
+    discrete (cdf_size != 201) questions, whose grids our linear-grid PCHIP
+    math does not model, and on any failure (stopgap chain)."""
+    global _pchip_distribution_class
+    if _pchip_distribution_class is not None:
+        return _pchip_distribution_class
+
     import numpy as np
-    from forecasting_tools import (BinaryQuestion, ForecastBot,
-                                   MultipleChoiceQuestion, NumericDistribution,
-                                   NumericQuestion, PredictedOptionList,
-                                   ReasonedPrediction)
-    from forecasting_tools.data_models.multiple_choice_report import \
-        PredictedOption
+    from forecasting_tools import NumericDistribution
     from forecasting_tools.data_models.numeric_report import Percentile
 
-    from bot.distributions import percentiles_to_cdf
-
-    cfg = cfg or DEFAULT_CONFIG
-    engine = CalibratedEnsembleBot(bot_config=cfg)
+    from bot.distributions import CDF_SIZE, percentiles_to_cdf
 
     class PchipNumericDistribution(NumericDistribution):
-        """Framework distribution with our PCHIP+standardized CDF; falls back
-        to the framework's linear construction if ours fails (stopgap chain)."""
 
-        @property
-        def cdf(self) -> list[Percentile]:
+        def get_cdf(self) -> list[Percentile]:
             try:
+                if self.zero_point is not None:
+                    logger.info("log-scaled question (zero_point set); "
+                                "using framework CDF construction")
+                    return super().get_cdf()
+                if (self.cdf_size or CDF_SIZE) != CDF_SIZE:
+                    logger.info("discrete question (cdf_size=%s); "
+                                "using framework CDF construction",
+                                self.cdf_size)
+                    return super().get_cdf()
                 declared = {p.percentile * 100: p.value
                             for p in self.declared_percentiles}
                 cdf_probs = percentiles_to_cdf(
@@ -212,8 +224,27 @@ def build_framework_bot(cfg: BotConfig | None = None):
                         for p, v in zip(cdf_probs, grid)]
             except Exception as e:
                 logger.warning("PCHIP CDF failed (%s); falling back to "
-                               "framework linear construction", e)
-                return super().cdf
+                               "framework construction", e)
+                return super().get_cdf()
+
+    _pchip_distribution_class = PchipNumericDistribution
+    return PchipNumericDistribution
+
+
+def build_framework_bot(cfg: BotConfig | None = None):
+    """Factory returning a forecasting_tools.ForecastBot subclass instance
+    wrapping CalibratedEnsembleBot. Inside a factory so importing this module
+    never requires forecasting-tools at test time."""
+    from forecasting_tools import (BinaryQuestion, ForecastBot,
+                                   MultipleChoiceQuestion, NumericQuestion,
+                                   PredictedOptionList, ReasonedPrediction)
+    from forecasting_tools.data_models.multiple_choice_report import \
+        PredictedOption
+    from forecasting_tools.data_models.numeric_report import Percentile
+
+    cfg = cfg or DEFAULT_CONFIG
+    engine = CalibratedEnsembleBot(bot_config=cfg)
+    PchipNumericDistribution = build_pchip_distribution_class()
 
     def _common_fields(question):
         return dict(
@@ -226,15 +257,27 @@ def build_framework_bot(cfg: BotConfig | None = None):
 
     research_providers_by_qid: dict = {}
 
+    def _qid(question):
+        """Unique key: group-question sub-questions share id_of_post and run
+        concurrently — id_of_question disambiguates them."""
+        return getattr(question, "id_of_question", None) or question.id_of_post
+
     def _log(question, qtype, final, members, models, **extra):
-        append_forecast({"question_id": question.id_of_post,
-                         "page_url": getattr(question, "page_url", None),
-                         "type": qtype, "final": final, "members": members,
-                         "models": models, "config_hash": engine.cfg_hash,
-                         "research_providers": research_providers_by_qid.get(
-                             question.id_of_post, ""),
-                         **extra},
-                        engine.cfg.log_path)
+        try:
+            append_forecast(
+                {"question_id": question.id_of_post,
+                 "id_of_question": getattr(question, "id_of_question", None),
+                 "page_url": getattr(question, "page_url", None),
+                 "type": qtype, "final": final, "members": members,
+                 "models": models, "config_hash": engine.cfg_hash,
+                 "research_providers": research_providers_by_qid.pop(
+                     _qid(question), ""),
+                 **extra},
+                engine.cfg.log_path)
+        except Exception as e:
+            # the log is the self-improvement substrate, but a logging failure
+            # must never cost the question after the full ensemble spend
+            logger.error("failed to write forecast log: %s", e)
 
     class FrameworkBot(ForecastBot):
         async def run_research(self, question) -> str:
@@ -242,11 +285,22 @@ def build_framework_bot(cfg: BotConfig | None = None):
                 dict(question_text=question.question_text,
                      resolution_criteria=question.resolution_criteria or "",
                      fine_print=question.fine_print or ""), engine.cfg)
-            research_providers_by_qid[question.id_of_post] = res.provider
+            research_providers_by_qid[_qid(question)] = res.provider
             if res.provider == "none":
                 logger.error("forecasting %s with NO research",
                              question.page_url)
             return res.text
+
+        async def forecast_questions(self, questions, return_exceptions=False):
+            limit = engine.cfg.max_questions_per_run
+            if limit and len(questions) > limit:
+                logger.warning(
+                    "cost brake: %d questions exceeds max_questions_per_run="
+                    "%d; forecasting only the first %d",
+                    len(questions), limit, limit)
+                questions = list(questions)[:limit]
+            return await super().forecast_questions(
+                questions, return_exceptions=return_exceptions)
 
         async def _run_forecast_on_binary(
                 self, question: BinaryQuestion, research: str
