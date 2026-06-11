@@ -13,8 +13,7 @@ load_dotenv()
 async def main() -> None:
     from forecasting_tools import GeneralLlm
     models = [m.model for m in DEFAULT_CONFIG.ensemble]
-    models += [DEFAULT_CONFIG.search_model, DEFAULT_CONFIG.parser_model,
-               DEFAULT_CONFIG.supervisor_model]
+    models += [DEFAULT_CONFIG.search_model, DEFAULT_CONFIG.parser_model]
     ok = True
     for slug in dict.fromkeys(models):     # dedupe, keep order
         try:

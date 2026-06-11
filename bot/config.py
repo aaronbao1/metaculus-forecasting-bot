@@ -43,17 +43,6 @@ class BotConfig:
     research_timeout_s: float = 300.0
     search_model: str = "perplexity/sonar-pro"     # via OpenRouter
     parser_model: str = "openai/gpt-5.4-mini"      # cheap reprompt/repair calls
-    # Supervisor: when the binary ensemble disagrees hard, one frontier call
-    # reconciles instead of blind averaging (~0.005 Brier, AIA; smingers).
-    supervisor_enabled: bool = True
-    supervisor_model: str = "anthropic/claude-opus-4-6"
-    supervisor_trigger_spread: float = 0.35   # max(member)-min(member)
-    supervisor_weight: float = 0.5            # log-odds blend vs raw aggregate
-    # Triage (Tetlock commandment #1): tier is always classified and logged;
-    # routing near-certain questions to a reduced ensemble ships OFF until
-    # logged data shows the classifier is trustworthy.
-    triage_enabled: bool = False
-    triage_fast_runs: int = 1                 # runs/member when routed fast
     max_questions_per_run: int = 50                # cost brake
     calibration_dir: str = "calibration"
     log_path: str = "logs/forecasts.jsonl"

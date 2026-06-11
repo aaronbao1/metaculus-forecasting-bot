@@ -49,20 +49,3 @@ def test_parse_percentiles_raises_when_too_few():
     with pytest.raises(ParseError):
         parse_percentiles("Percentile 50: 10")
 
-
-def test_parse_tier_extracts_last_match_case_insensitive():
-    from bot.parsing import parse_tier
-    text = "leaning Tier: GOLDILOCKS at first...\nFinal answer.\ntier: near_certain"
-    assert parse_tier(text) == "near_certain"
-
-
-def test_parse_tier_accepts_all_tiers():
-    from bot.parsing import parse_tier
-    assert parse_tier("Tier: NOISE") == "noise"
-    assert parse_tier("Tier: Goldilocks") == "goldilocks"
-
-
-def test_parse_tier_raises_when_absent():
-    from bot.parsing import parse_tier
-    with pytest.raises(ParseError):
-        parse_tier("no tier here")

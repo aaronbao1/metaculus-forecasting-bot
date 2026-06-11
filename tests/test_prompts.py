@@ -1,6 +1,6 @@
 from bot.prompts import (
     BINARY_PROMPT, MC_PROMPT, NUMERIC_PROMPT,
-    RESEARCH_PROMPT_CURRENT, RESEARCH_PROMPT_HISTORICAL, SUPERVISOR_PROMPT,
+    RESEARCH_PROMPT_CURRENT, RESEARCH_PROMPT_HISTORICAL,
 )
 
 COMMON = dict(
@@ -30,15 +30,6 @@ def test_numeric_prompt_renders_with_all_percentiles():
         upper_bound_message="cannot be above 100")
     for p in ("2.5", "10", "25", "50", "75", "90", "97.5"):
         assert f"Percentile {p}:" in text
-
-
-def test_supervisor_prompt_renders_and_has_contract_line():
-    text = SUPERVISOR_PROMPT.format(
-        **COMMON, member_count=6, members_block="--- Forecaster 1 ...")
-    assert "Probability: ZZ%" in text
-    assert "crux" in text.lower()
-    assert "blindly average" in text.lower()
-    assert "Forecaster 1" in text
 
 
 def test_research_prompts_render():

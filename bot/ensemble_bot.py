@@ -15,23 +15,17 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from bot.aggregation import (aggregate_binary, aggregate_multiple_choice,
-                             from_log_odds, to_log_odds)
+from bot.aggregation import (aggregate_binary, aggregate_multiple_choice)
 from bot.calibration import calibrate_binary, load_platt
-from bot.config import BotConfig, DEFAULT_CONFIG, EnsembleMember, config_hash
+from bot.config import BotConfig, DEFAULT_CONFIG, config_hash
 from bot.logging_store import append_forecast
 from bot.parsing import (ParseError, parse_binary, parse_multiple_choice,
-                         parse_percentiles, parse_tier)
-from bot.prompts import (BINARY_PROMPT, MC_PROMPT, NUMERIC_PROMPT,
-                         SUPERVISOR_PROMPT, TRIAGE_PROMPT)
+                         parse_percentiles)
+from bot.prompts import BINARY_PROMPT, MC_PROMPT, NUMERIC_PROMPT
 from bot.research import run_research
 from bot.timeutils import days_until
 
 logger = logging.getLogger(__name__)
-
-# Tail of each member's scratchpad shown to the supervisor — the final
-# calibration/premortem section is where the disagreement's crux surfaces.
-SUPERVISOR_EXCERPT_CHARS = 1200
 
 
 @dataclass
@@ -40,9 +34,9 @@ class BinaryEnsembleResult:
     aggregate_raw: float
     member_probs: list = field(default_factory=list)
     member_models: list = field(default_factory=list)
-    spread: float = 0.0                  # max(member) - min(member)
-    supervisor_prob: float | None = None  # set only when supervisor ran + parsed
-    tier: str = "unknown"                # triage label (always logged)
+    spread: float = 0.0                  # max(member) - min(member); logged
+    # provenance — high-spread questions are the designed seam for the
+    # post-MVP System 2 supervisor (plan roadmap #1).
 
 
 @dataclass
@@ -50,7 +44,6 @@ class MCEnsembleResult:
     final: dict
     member_dicts: list = field(default_factory=list)
     member_models: list = field(default_factory=list)
-    tier: str = "unknown"
 
 
 @dataclass
@@ -58,7 +51,6 @@ class NumericEnsembleResult:
     median_percentiles: dict          # percentile -> value, medianed across members
     member_percentile_dicts: list = field(default_factory=list)
     member_models: list = field(default_factory=list)
-    tier: str = "unknown"
 
 
 def _days_remaining(close_iso: str) -> float:
@@ -96,11 +88,11 @@ class CalibratedEnsembleBot:
                          temperature=member.temperature, timeout=900)
         return await llm.invoke(prompt)
 
-    async def _fan_out(self, prompt: str, runs_override: int | None = None):
+    async def _fan_out(self, prompt: str):
         """Run every ensemble member; return (texts, models) of survivors."""
         jobs, models = [], []
         for member in self.cfg.ensemble:
-            for _ in range(runs_override or member.runs):
+            for _ in range(member.runs):
                 jobs.append(self._invoke_model((member, prompt)))
                 models.append(member.model)
         results = await asyncio.gather(*jobs, return_exceptions=True)
@@ -114,66 +106,18 @@ class CalibratedEnsembleBot:
         return texts, kept
 
     def _parse_survivors(self, texts, models, parse_fn):
-        parsed, kept, kept_texts = [], [], []
+        parsed, kept = [], []
         for t, m in zip(texts, models):
             try:
                 parsed.append(parse_fn(t))
                 kept.append(m)
-                kept_texts.append(t)
             except ParseError as e:
                 logger.warning("parse failure from %s: %s", m, e)
         if len(parsed) < self.cfg.min_members:
             raise RuntimeError(
                 f"only {len(parsed)} ensemble members survived "
                 f"(min {self.cfg.min_members}); skipping question")
-        return parsed, kept, kept_texts
-
-    async def classify_question(self, *, question_text, resolution_criteria,
-                                fine_print, close_iso) -> str:
-        """Triage tier via one cheap call. Never raises — 'unknown' on any
-        failure. The tier is logged with every forecast so routing can be
-        validated offline before triage_enabled ships on."""
-        prompt = TRIAGE_PROMPT.format(
-            question_text=question_text,
-            resolution_criteria=resolution_criteria, fine_print=fine_print,
-            today=date.today().isoformat(), close_date=str(close_iso)[:10])
-        member = EnsembleMember(self.cfg.parser_model, runs=1, temperature=0.0)
-        try:
-            return parse_tier(await self._invoke_model((member, prompt)))
-        except Exception as e:
-            logger.warning("triage classification failed (%s)", e)
-            return "unknown"
-
-    def _routed_runs(self, tier: str) -> int | None:
-        """Reduced runs for near-certain questions when routing is enabled."""
-        if self.cfg.triage_enabled and tier == "near_certain":
-            return self.cfg.triage_fast_runs
-        return None
-
-    async def _run_supervisor(self, *, question_text, background_info,
-                              resolution_criteria, fine_print, research,
-                              close_iso, probs, models, texts) -> float | None:
-        """One frontier call reconciling a divergent panel (AIA-style).
-        Returns a probability, or None on any failure — the raw aggregate is
-        always a safe fallback; the supervisor must never cost the question."""
-        members_block = "\n\n".join(
-            f"--- Forecaster {i + 1} ({m}) — final answer {p:.0%}.\n"
-            f"Reasoning excerpt: ...{t[-SUPERVISOR_EXCERPT_CHARS:]}"
-            for i, (m, p, t) in enumerate(zip(models, probs, texts)))
-        prompt = SUPERVISOR_PROMPT.format(
-            question_text=question_text, background_info=background_info,
-            resolution_criteria=resolution_criteria, fine_print=fine_print,
-            research=research, today=date.today().isoformat(),
-            close_date=str(close_iso)[:10],
-            days_remaining=_days_remaining(close_iso),
-            member_count=len(probs), members_block=members_block)
-        member = EnsembleMember(self.cfg.supervisor_model, runs=1,
-                                temperature=0.2)
-        try:
-            return parse_binary(await self._invoke_model((member, prompt)))
-        except Exception as e:
-            logger.warning("supervisor failed (%s); using raw aggregate", e)
-            return None
+        return parsed, kept
 
     async def run_binary_ensemble(self, *, question_text, background_info,
                                   resolution_criteria, fine_print, research,
@@ -184,36 +128,15 @@ class CalibratedEnsembleBot:
             research=research, today=date.today().isoformat(),
             close_date=str(close_iso)[:10],
             days_remaining=_days_remaining(close_iso))
-        tier = await self.classify_question(
-            question_text=question_text,
-            resolution_criteria=resolution_criteria,
-            fine_print=fine_print, close_iso=close_iso)
-        texts, models = await self._fan_out(prompt, self._routed_runs(tier))
-        probs, kept, kept_texts = self._parse_survivors(
-            texts, models, parse_binary)
+        texts, models = await self._fan_out(prompt)
+        probs, kept = self._parse_survivors(texts, models, parse_binary)
         raw = aggregate_binary(probs, self.cfg.aggregation_method)
         spread = max(probs) - min(probs)
-        supervisor_prob = None
-        if (self.cfg.supervisor_enabled
-                and spread > self.cfg.supervisor_trigger_spread):
-            supervisor_prob = await self._run_supervisor(
-                question_text=question_text, background_info=background_info,
-                resolution_criteria=resolution_criteria,
-                fine_print=fine_print, research=research, close_iso=close_iso,
-                probs=probs, models=kept, texts=kept_texts)
-        blended = raw
-        if supervisor_prob is not None:
-            w = self.cfg.supervisor_weight
-            blended = float(from_log_odds(
-                w * to_log_odds([supervisor_prob])[0]
-                + (1 - w) * to_log_odds([raw])[0]))
-        final = calibrate_binary(blended, self._platt_binary,
+        final = calibrate_binary(raw, self._platt_binary,
                                  self.cfg.cap_lo, self.cfg.cap_hi)
         return BinaryEnsembleResult(final=final, aggregate_raw=raw,
                                     member_probs=probs, member_models=kept,
-                                    spread=spread,
-                                    supervisor_prob=supervisor_prob,
-                                    tier=tier)
+                                    spread=spread)
 
     async def run_mc_ensemble(self, *, question_text, background_info,
                               resolution_criteria, fine_print, research,
@@ -225,16 +148,12 @@ class CalibratedEnsembleBot:
             close_date=str(close_iso)[:10],
             days_remaining=_days_remaining(close_iso),
             options=", ".join(options))
-        tier = await self.classify_question(
-            question_text=question_text,
-            resolution_criteria=resolution_criteria,
-            fine_print=fine_print, close_iso=close_iso)
-        texts, models = await self._fan_out(prompt, self._routed_runs(tier))
-        dicts, kept, _ = self._parse_survivors(
+        texts, models = await self._fan_out(prompt)
+        dicts, kept = self._parse_survivors(
             texts, models, lambda t: parse_multiple_choice(t, list(options)))
         final = aggregate_multiple_choice(dicts, floor=self.cfg.mc_floor)
         return MCEnsembleResult(final=final, member_dicts=dicts,
-                                member_models=kept, tier=tier)
+                                member_models=kept)
 
     async def run_numeric_ensemble(self, *, question_text, background_info,
                                    resolution_criteria, fine_print, research,
@@ -249,16 +168,12 @@ class CalibratedEnsembleBot:
             units=units or "(see question)",
             lower_bound_message=lower_bound_message,
             upper_bound_message=upper_bound_message)
-        tier = await self.classify_question(
-            question_text=question_text,
-            resolution_criteria=resolution_criteria,
-            fine_print=fine_print, close_iso=close_iso)
-        texts, models = await self._fan_out(prompt, self._routed_runs(tier))
-        dicts, kept, _ = self._parse_survivors(texts, models, parse_percentiles)
+        texts, models = await self._fan_out(prompt)
+        dicts, kept = self._parse_survivors(texts, models, parse_percentiles)
         median_pcts = _median_per_percentile(dicts)
         return NumericEnsembleResult(median_percentiles=median_pcts,
                                      member_percentile_dicts=dicts,
-                                     member_models=kept, tier=tier)
+                                     member_models=kept)
 
 
 def build_framework_bot(cfg: BotConfig | None = None):
@@ -339,17 +254,13 @@ def build_framework_bot(cfg: BotConfig | None = None):
             r = await engine.run_binary_ensemble(
                 research=research, **_common_fields(question))
             _log(question, "binary", r.final, r.member_probs, r.member_models,
-                 raw=r.aggregate_raw, spread=r.spread,
-                 supervisor_prob=r.supervisor_prob, tier=r.tier)
-            sup_note = (f" -> supervisor({r.supervisor_prob:.3f}) blended"
-                        if r.supervisor_prob is not None else "")
+                 raw=r.aggregate_raw, spread=r.spread)
             return ReasonedPrediction(
                 prediction_value=r.final,
-                reasoning=(f"tier={r.tier} "
-                           f"ensemble={[round(p, 3) for p in r.member_probs]} "
+                reasoning=(f"ensemble={[round(p, 3) for p in r.member_probs]} "
                            f"-> {engine.cfg.aggregation_method}="
-                           f"{r.aggregate_raw:.3f} (spread {r.spread:.2f})"
-                           f"{sup_note} -> calibrated+capped={r.final:.3f}"))
+                           f"{r.aggregate_raw:.3f} (spread {r.spread:.2f}) "
+                           f"-> calibrated+capped={r.final:.3f}"))
 
         async def _run_forecast_on_multiple_choice(
                 self, question: MultipleChoiceQuestion, research: str
@@ -358,7 +269,7 @@ def build_framework_bot(cfg: BotConfig | None = None):
                 research=research, options=list(question.options),
                 **_common_fields(question))
             _log(question, "multiple_choice", r.final, r.member_dicts,
-                 r.member_models, tier=r.tier)
+                 r.member_models)
             option_list = PredictedOptionList(predicted_options=[
                 PredictedOption(option_name=o, probability=p)
                 for o, p in r.final.items()])
@@ -381,7 +292,7 @@ def build_framework_bot(cfg: BotConfig | None = None):
                 lower_bound_message=lo_msg, upper_bound_message=hi_msg,
                 **_common_fields(question))
             _log(question, "numeric", r.median_percentiles,
-                 r.member_percentile_dicts, r.member_models, tier=r.tier)
+                 r.member_percentile_dicts, r.member_models)
             dist = PchipNumericDistribution(
                 declared_percentiles=[
                     Percentile(percentile=pct / 100.0, value=val)
