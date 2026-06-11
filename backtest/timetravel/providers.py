@@ -188,6 +188,10 @@ async def _wayback_snapshot_before(url: str, t: datetime):
     if not rows or len(rows) < 2:
         return None
     ts, original = rows[-1][1], rows[-1][2]
+    # Defense-in-depth: never trust the 'to' filter alone — re-check the
+    # capture timestamp client-side so a CDX quirk cannot sneak in a post-T row.
+    if ts > _gdelt_ts(t):
+        return None
     raw = f"https://web.archive.org/web/{ts}id_/{original}"
     return raw, datetime.strptime(ts, "%Y%m%d%H%M%S").isoformat()
 
@@ -199,6 +203,9 @@ async def _gdelt_wayback_research(question: dict, cfg) -> str:
     article with no pre-T capture is dropped: not provably pre-T."""
     ctx = _require_context("gdelt_wayback")
     articles = []
+    # GDELT DOC API serves historical STARTDATETIME/ENDDATETIME windows
+    # (live-verified 2026-06-11: 2024 windows return in-window articles);
+    # each query span is capped ~3 months, hence the windowing.
     for w in range(GDELT_WINDOWS):
         end = ctx.as_of - timedelta(days=90 * w)
         start = end - timedelta(days=90)
@@ -262,7 +269,7 @@ async def _exa_historical_research(question: dict, cfg) -> str:
     data = await _http_post_json(
         EXA_SEARCH_URL,
         payload={"query": question["question_text"],
-                 "endCrawlDate": ctx.as_of.isoformat(),
+                 "endCrawlDate": ctx.as_of.isoformat().replace("+00:00", "Z"),
                  "numResults": EXA_NUM_RESULTS,
                  "contents": {"text": {"maxCharacters": EXA_DOC_CHARS}}},
         headers={"x-api-key": api_key, "Content-Type": "application/json"})
@@ -270,11 +277,26 @@ async def _exa_historical_research(question: dict, cfg) -> str:
     for r in (data or {}).get("results") or []:
         url = r.get("url")
         published = r.get("publishedDate")
+        # Determine trust label honestly: publisher trust only when publishedDate
+        # is present and <= T; otherwise low trust (the leak-screen decides
+        # inclusion in strict mode — we never exclude here in pragmatic mode).
+        try:
+            pub_dt = datetime.fromisoformat(
+                published.replace("Z", "+00:00")) if published else None
+        except (ValueError, AttributeError):
+            pub_dt = None
+        if pub_dt is not None and pub_dt <= ctx.as_of:
+            date_trust = "publisher"
+            note = ("semi-trusted: endCrawlDate filter; crawl date >> "
+                    "publication metadata, unaudited")
+        else:
+            date_trust = "low"
+            note = ("semi-trusted: endCrawlDate filter; crawl date >> "
+                    "publication metadata, unaudited"
+                    "; published date missing or post-T")
         ctx.record(LedgerEntry(
             provider="exa_historical", query=question["question_text"],
-            url=url, doc_date=published, date_trust="publisher",
-            note="semi-trusted: endCrawlDate filter; crawl date >> "
-                 "publication metadata, unaudited"))
+            url=url, doc_date=published, date_trust=date_trust, note=note))
         parts.append(f"[{published or 'undated'}] {r.get('title', url)} — "
                      f"{(r.get('text') or '')[:EXA_DOC_CHARS]} ({url})")
     if not parts:
