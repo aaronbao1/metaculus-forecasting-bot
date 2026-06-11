@@ -64,3 +64,24 @@ def test_import_halawi_zero_resolution_is_false(tmp_path):
     store = CorpusStore(tmp_path / "corpus")
     import_halawi(store, dataset_dir)
     assert store.get_question("halawi:q-110").resolution is False
+
+
+def test_import_halawi_non_binary_numeric_resolution_is_skipped(tmp_path):
+    """A record with resolution=0.5 (ambiguous/annulled) must be SKIPPED.
+
+    The importer must not store it as a confident True/False outcome.
+    An error mentioning 'resolution' must be appended instead.
+    """
+    dataset_dir = tmp_path / "halawi"
+    dataset_dir.mkdir()
+    rec = dict(RECORDS[0], id="q-half", resolution=0.5)
+    (dataset_dir / "one.json").write_text(json.dumps(rec))
+    store = CorpusStore(tmp_path / "corpus")
+    report = import_halawi(store, dataset_dir)
+
+    # Record must NOT be stored
+    assert store.get_question("halawi:q-half") is None
+    # Must have been counted as an error, not as fetched
+    assert report.fetched == 0
+    assert len(report.errors) == 1
+    assert "resolution" in report.errors[0].lower()

@@ -48,7 +48,13 @@ def _to_bool(v):
     if isinstance(v, bool):
         return v
     if isinstance(v, (int, float)):
-        return bool(round(v))
+        # Only exact binary endpoints are unambiguous; anything else
+        # (e.g. 0.5 for annulled/ambiguous) is not a confident outcome.
+        if v == 1 or v == 1.0:
+            return True
+        if v == 0 or v == 0.0:
+            return False
+        return None
     if isinstance(v, str) and v.strip().lower() in ("yes", "no"):
         return v.strip().lower() == "yes"
     return None
