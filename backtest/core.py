@@ -1,14 +1,25 @@
 """Core backtest types (contract: stdlib-only; see docs/superpowers/specs/
-2026-06-11-backtesting-system-design.md and docs/backtesting/COMPATIBILITY.md).
+2026-06-11-backtesting-system-design.md and docs/backtesting/COMPATIBILITY.md
+(created in Phase 5 of the build plan)).
 
 Artifacts serialize to JSONL via artifact_to_dict / artifact_from_dict:
 datetimes as iso8601 strings, enums as their string values, tuples as lists.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from enum import Enum
+
+
+def _only_known(cls, d: dict) -> dict:
+    """Return a copy of *d* with only keys that are declared fields of *cls*.
+
+    Allows forward-compatible deserialization: if a future schema version adds a
+    field, older readers can still reconstruct the dataclass without TypeError.
+    """
+    names = {f.name for f in fields(cls)}
+    return {k: v for k, v in d.items() if k in names}
 
 
 class QType(str, Enum):
@@ -111,12 +122,12 @@ def artifact_from_dict(d: dict) -> ForecastArtifact:
     return ForecastArtifact(
         qid=d["qid"],
         horizon=d["horizon"],
-        as_of=datetime.fromisoformat(d["as_of"]),
+        as_of=datetime.fromisoformat(str(d["as_of"]).replace("Z", "+00:00")),
         system_name=d["system_name"],
         config_fingerprint=d["config_fingerprint"],
         forecast=forecast,
-        stages=[StageRecord(**s) for s in d.get("stages", [])],
-        evidence_ledger=[LedgerEntry(**e) for e in d.get("evidence_ledger", [])],
+        stages=[StageRecord(**_only_known(StageRecord, s)) for s in d.get("stages", [])],
+        evidence_ledger=[LedgerEntry(**_only_known(LedgerEntry, e)) for e in d.get("evidence_ledger", [])],
         contamination=d.get("contamination", "contaminated"),
         cutoff_mode=d.get("cutoff_mode", "strict"),
         error=d.get("error"),

@@ -2,7 +2,7 @@
 LedgerEntry, ForecastArtifact, and the artifact <-> dict JSONL round-trip."""
 import json
 from dataclasses import FrozenInstanceError
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -152,3 +152,64 @@ def test_dict_uses_iso_strings_and_enum_values():
     assert d["schema_version"] == 1
     assert d["contamination"] == "contaminated"  # default per contract
     assert d["cutoff_mode"] == "strict"
+
+
+# --- new tests for code-review fixes ---
+
+
+def test_extra_fields_in_stage_and_ledger_are_ignored():
+    """Forward-compatible reads: unknown keys in StageRecord/LedgerEntry dicts must not raise."""
+    art = ForecastArtifact(
+        qid="metaculus:1",
+        horizon="spot",
+        as_of=datetime(2025, 3, 1, 12, 30, tzinfo=timezone.utc),
+        system_name="s",
+        config_fingerprint="f",
+        forecast=Forecast(qtype=QType.BINARY, binary_prob=0.5),
+        stages=[StageRecord(stage="research")],
+        evidence_ledger=[LedgerEntry(provider="asknews", query="q")],
+    )
+    d = artifact_to_dict(art)
+    wire = json.loads(json.dumps(d))
+    # Inject unknown future fields
+    wire["stages"][0]["latency_ms"] = 42
+    wire["evidence_ledger"][0]["latency_ms"] = 99
+    # Must not raise TypeError
+    back = artifact_from_dict(wire)
+    assert back.stages[0].stage == "research"
+    assert back.evidence_ledger[0].provider == "asknews"
+
+
+def test_tz_aware_as_of_round_trips():
+    """tz-aware as_of must survive json.dumps/loads + artifact_from_dict with tzinfo intact."""
+    art = ForecastArtifact(
+        qid="metaculus:1",
+        horizon="spot",
+        as_of=datetime(2025, 3, 1, 12, 30, tzinfo=timezone.utc),
+        system_name="s",
+        config_fingerprint="f",
+        forecast=Forecast(qtype=QType.BINARY, binary_prob=0.5),
+    )
+    wire = json.loads(json.dumps(artifact_to_dict(art)))
+    back = artifact_from_dict(wire)
+    assert back == art
+    assert back.as_of.tzinfo is not None
+
+
+def test_z_suffix_as_of_is_parsed():
+    """artifact_from_dict must accept a 'Z'-suffixed ISO timestamp for as_of."""
+    art = ForecastArtifact(
+        qid="metaculus:1",
+        horizon="spot",
+        as_of=datetime(2025, 3, 1, 12, 30, tzinfo=timezone.utc),
+        system_name="s",
+        config_fingerprint="f",
+        forecast=Forecast(qtype=QType.BINARY, binary_prob=0.5),
+    )
+    d = artifact_to_dict(art)
+    wire = json.loads(json.dumps(d))
+    # Replace the iso string with a Z-suffixed form
+    wire["as_of"] = "2025-03-01T12:30:00Z"
+    back = artifact_from_dict(wire)
+    assert back.as_of == datetime(2025, 3, 1, 12, 30, tzinfo=timezone.utc)
+    assert back.as_of.tzinfo is not None
