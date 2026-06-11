@@ -15,17 +15,23 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from bot.aggregation import (aggregate_binary, aggregate_multiple_choice)
+from bot.aggregation import (aggregate_binary, aggregate_multiple_choice,
+                             from_log_odds, to_log_odds)
 from bot.calibration import calibrate_binary, load_platt
-from bot.config import BotConfig, DEFAULT_CONFIG, config_hash
+from bot.config import BotConfig, DEFAULT_CONFIG, EnsembleMember, config_hash
 from bot.logging_store import append_forecast
 from bot.parsing import (ParseError, parse_binary, parse_multiple_choice,
                          parse_percentiles)
-from bot.prompts import BINARY_PROMPT, MC_PROMPT, NUMERIC_PROMPT
+from bot.prompts import (BINARY_PROMPT, MC_PROMPT, NUMERIC_PROMPT,
+                         SUPERVISOR_PROMPT)
 from bot.research import run_research
 from bot.timeutils import days_until
 
 logger = logging.getLogger(__name__)
+
+# Tail of each member's scratchpad shown to the supervisor — the final
+# calibration/premortem section is where the disagreement's crux surfaces.
+SUPERVISOR_EXCERPT_CHARS = 1200
 
 
 @dataclass
@@ -34,6 +40,8 @@ class BinaryEnsembleResult:
     aggregate_raw: float
     member_probs: list = field(default_factory=list)
     member_models: list = field(default_factory=list)
+    spread: float = 0.0                  # max(member) - min(member)
+    supervisor_prob: float | None = None  # set only when supervisor ran + parsed
 
 
 @dataclass
@@ -103,18 +111,44 @@ class CalibratedEnsembleBot:
         return texts, kept
 
     def _parse_survivors(self, texts, models, parse_fn):
-        parsed, kept = [], []
+        parsed, kept, kept_texts = [], [], []
         for t, m in zip(texts, models):
             try:
                 parsed.append(parse_fn(t))
                 kept.append(m)
+                kept_texts.append(t)
             except ParseError as e:
                 logger.warning("parse failure from %s: %s", m, e)
         if len(parsed) < self.cfg.min_members:
             raise RuntimeError(
                 f"only {len(parsed)} ensemble members survived "
                 f"(min {self.cfg.min_members}); skipping question")
-        return parsed, kept
+        return parsed, kept, kept_texts
+
+    async def _run_supervisor(self, *, question_text, background_info,
+                              resolution_criteria, fine_print, research,
+                              close_iso, probs, models, texts) -> float | None:
+        """One frontier call reconciling a divergent panel (AIA-style).
+        Returns a probability, or None on any failure — the raw aggregate is
+        always a safe fallback; the supervisor must never cost the question."""
+        members_block = "\n\n".join(
+            f"--- Forecaster {i + 1} ({m}) — final answer {p:.0%}.\n"
+            f"Reasoning excerpt: ...{t[-SUPERVISOR_EXCERPT_CHARS:]}"
+            for i, (m, p, t) in enumerate(zip(models, probs, texts)))
+        prompt = SUPERVISOR_PROMPT.format(
+            question_text=question_text, background_info=background_info,
+            resolution_criteria=resolution_criteria, fine_print=fine_print,
+            research=research, today=date.today().isoformat(),
+            close_date=str(close_iso)[:10],
+            days_remaining=_days_remaining(close_iso),
+            member_count=len(probs), members_block=members_block)
+        member = EnsembleMember(self.cfg.supervisor_model, runs=1,
+                                temperature=0.2)
+        try:
+            return parse_binary(await self._invoke_model((member, prompt)))
+        except Exception as e:
+            logger.warning("supervisor failed (%s); using raw aggregate", e)
+            return None
 
     async def run_binary_ensemble(self, *, question_text, background_info,
                                   resolution_criteria, fine_print, research,
@@ -126,12 +160,30 @@ class CalibratedEnsembleBot:
             close_date=str(close_iso)[:10],
             days_remaining=_days_remaining(close_iso))
         texts, models = await self._fan_out(prompt)
-        probs, kept = self._parse_survivors(texts, models, parse_binary)
+        probs, kept, kept_texts = self._parse_survivors(
+            texts, models, parse_binary)
         raw = aggregate_binary(probs, self.cfg.aggregation_method)
-        final = calibrate_binary(raw, self._platt_binary,
+        spread = max(probs) - min(probs)
+        supervisor_prob = None
+        if (self.cfg.supervisor_enabled
+                and spread > self.cfg.supervisor_trigger_spread):
+            supervisor_prob = await self._run_supervisor(
+                question_text=question_text, background_info=background_info,
+                resolution_criteria=resolution_criteria,
+                fine_print=fine_print, research=research, close_iso=close_iso,
+                probs=probs, models=kept, texts=kept_texts)
+        blended = raw
+        if supervisor_prob is not None:
+            w = self.cfg.supervisor_weight
+            blended = float(from_log_odds(
+                w * to_log_odds([supervisor_prob])[0]
+                + (1 - w) * to_log_odds([raw])[0]))
+        final = calibrate_binary(blended, self._platt_binary,
                                  self.cfg.cap_lo, self.cfg.cap_hi)
         return BinaryEnsembleResult(final=final, aggregate_raw=raw,
-                                    member_probs=probs, member_models=kept)
+                                    member_probs=probs, member_models=kept,
+                                    spread=spread,
+                                    supervisor_prob=supervisor_prob)
 
     async def run_mc_ensemble(self, *, question_text, background_info,
                               resolution_criteria, fine_print, research,
@@ -144,7 +196,7 @@ class CalibratedEnsembleBot:
             days_remaining=_days_remaining(close_iso),
             options=", ".join(options))
         texts, models = await self._fan_out(prompt)
-        dicts, kept = self._parse_survivors(
+        dicts, kept, _ = self._parse_survivors(
             texts, models, lambda t: parse_multiple_choice(t, list(options)))
         final = aggregate_multiple_choice(dicts, floor=self.cfg.mc_floor)
         return MCEnsembleResult(final=final, member_dicts=dicts,
@@ -164,7 +216,7 @@ class CalibratedEnsembleBot:
             lower_bound_message=lower_bound_message,
             upper_bound_message=upper_bound_message)
         texts, models = await self._fan_out(prompt)
-        dicts, kept = self._parse_survivors(texts, models, parse_percentiles)
+        dicts, kept, _ = self._parse_survivors(texts, models, parse_percentiles)
         median_pcts = _median_per_percentile(dicts)
         return NumericEnsembleResult(median_percentiles=median_pcts,
                                      member_percentile_dicts=dicts,

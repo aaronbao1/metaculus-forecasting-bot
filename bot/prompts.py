@@ -97,6 +97,51 @@ Percentile 90: XX
 Percentile 97.5: XX
 """)
 
+SUPERVISOR_PROMPT = """You are the head forecaster reconciling a panel whose members disagree
+sharply. Do not blindly average — investigate why they disagree and decide.
+
+QUESTION
+{question_text}
+
+BACKGROUND
+{background_info}
+
+RESOLUTION CRITERIA (these decide the outcome — forecast these criteria
+literally, not the question's title or vibe)
+{resolution_criteria}
+
+FINE PRINT
+{fine_print}
+
+RESEARCH REPORT
+{research}
+
+Today's date: {today}
+Question closes: {close_date} ({days_remaining:.0f} days remaining)
+
+PANEL ({member_count} forecasters; final excerpt of each one's reasoning)
+{members_block}
+
+Work through these steps, writing each out briefly:
+
+1. CRUX: state in one or two sentences what the panel actually disagrees
+   about — a fact, a base rate, what the resolution criteria mean, or timing.
+2. ADJUDICATE: which side's evidence is stronger? Grade it: multiple
+   independent reliable sources / direct causal mechanism / structural
+   factors beat expert opinion, which beats anecdote or speculation.
+3. FAILURE CHECK: is either side assuming an event already happened without
+   evidence in the research report, misreading the deadline or threshold,
+   ignoring the base rate, or anchoring on stale news? Discount any
+   forecaster who misread the resolution criteria.
+4. DECIDE: commit to the probability the evidence justifies. If one side is
+   simply right, land near it — do not split the difference out of
+   politeness. Hedge toward the middle only when the crux is genuinely
+   unresolvable before the close date. Use 1% granularity.
+
+The very last line of your answer must be exactly:
+Probability: ZZ%
+"""
+
 RESEARCH_PROMPT_HISTORICAL = """You are a research assistant to a forecaster. For the question below, produce
 a concise OUTSIDE-VIEW report: relevant historical precedents and how often
 similar events happened (rough base rates with counts), structural factors,
