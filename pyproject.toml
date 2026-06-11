@@ -1,0 +1,20 @@
+[project]
+name = "metaculus-ensemble-bot"
+version = "0.1.0"
+description = "Calibrated ensemble scaffold bot for Metaculus FutureEval tournaments"
+requires-python = ">=3.11"
+dependencies = [
+    "forecasting-tools>=0.2.40",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.setuptools]
+packages = ["bot"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
