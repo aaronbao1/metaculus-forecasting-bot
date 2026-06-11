@@ -141,6 +141,41 @@ def log_score(forecast: Forecast, q: BacktestQuestion) -> float:
     return math.log(value)
 
 
+def baseline_score(forecast: Forecast, q: BacktestQuestion) -> float:
+    """FAQ "Baseline score math":
+    binary:     100 * (ln P(outcome) - ln 0.5) / ln 2
+    MC:         100 * (ln P(outcome) - ln(1/N)) / ln N
+    continuous: 100 * (ln pdf(outcome) - ln baseline) / 2, with baseline
+                1 / 0.95 / 0.9 for closed / one-open / two-open bounds;
+                discrete uses the pmf against the uniform pmf (identical
+                formula after the pmf -> pdf change of units).
+    Out-of-bounds resolutions score the boundary mass against the uniform
+    baseline's own out-of-bound mass 0.05 (platform source:
+    scoring/score_math.py, evaluate_forecasts_baseline_*)."""
+    _require_resolution(q)
+    if forecast.qtype is QType.BINARY:
+        p = _outcome_prob(forecast, q)
+        return 100.0 * (math.log(p) - math.log(0.5)) / math.log(2.0)
+    if forecast.qtype is QType.MULTIPLE_CHOICE:
+        n = len(q.options)
+        if n < 2:
+            raise ValueError("multiple_choice question needs >= 2 options")
+        p = _outcome_prob(forecast, q)
+        return 100.0 * (math.log(p) - math.log(1.0 / n)) / math.log(n)
+    s = _scaling(q)
+    open_count = (int(bool(s.get("open_lower_bound")))
+                  + int(bool(s.get("open_upper_bound"))))
+    kind, value = _pdf_value(forecast, q)
+    if kind == "binary":
+        return 100.0 * (math.log(value) - math.log(0.05)) / 2.0
+    if kind == "pmf":  # discrete: pmf vs uniform pmf
+        n_bins = len(forecast.cdf) - 1
+        chance = (1.0 - 0.05 * open_count) / n_bins
+        return 100.0 * (math.log(value) - math.log(chance)) / 2.0
+    chance = 1.0 - 0.05 * open_count
+    return 100.0 * (math.log(value) - math.log(chance)) / 2.0
+
+
 def brier(forecast: Forecast, q: BacktestQuestion) -> float:
     """Brier score (not part of the Metaculus score family; reported for
     cross-literature comparability). Binary: (p_yes - outcome)^2, the Halawi/
