@@ -348,6 +348,29 @@ async def test_numeric_zero_point_returns_error_artifact(
 
 
 # ---------------------------------------------------------------------------
+# Fix 3b — close_iso str() space-separator form (live parity)
+# ---------------------------------------------------------------------------
+
+def test_common_fields_close_iso_space_separator():
+    """_common_fields must produce close_iso with a space separator (str() form),
+    not a T separator (.isoformat() form), so backtest prompts match live prompts."""
+    from backtest.systems.ensemble_adapter import _common_fields
+
+    q = BacktestQuestion(
+        qid="metaculus:42", platform="metaculus", native_id="42",
+        qtype=QType.BINARY, title="Test?",
+        resolution_criteria="Resolves YES.", fine_print="",
+        open_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        scheduled_close_time=datetime(2025, 6, 1, 12, 30, tzinfo=timezone.utc))
+
+    fields = _common_fields(q)
+    assert fields["close_iso"] == "2025-06-01 12:30:00+00:00", (
+        f"Expected space-separator form '2025-06-01 12:30:00+00:00', "
+        f"got {fields['close_iso']!r} — check that _common_fields uses str() "
+        f"not .isoformat()")
+
+
+# ---------------------------------------------------------------------------
 # Fix 4 — byte-level prompt parity
 # ---------------------------------------------------------------------------
 
