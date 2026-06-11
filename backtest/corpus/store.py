@@ -88,14 +88,34 @@ def _safe(qid: str) -> str:
 
 
 class CorpusStore:
+    """SQLite + blob store for backtest corpus data.
+
+    Threading contract: single-process use only. WAL mode is enabled so
+    async fetchers can safely call the store from coroutines in the same
+    process. Concurrent multi-thread WRITES are not safe.
+    """
+
     def __init__(self, root: Path):
         self.root = Path(root)
         self.blobs = self.root / "blobs"
         self.blobs.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.root / "corpus.db")
+        self.conn = sqlite3.connect(
+            self.root / "corpus.db", check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(_SCHEMA)
         self.conn.commit()
+
+    def close(self) -> None:
+        """Close the underlying SQLite connection."""
+        self.conn.close()
+
+    def __enter__(self) -> "CorpusStore":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+        return None
 
     def upsert_question(self, q: BacktestQuestion) -> None:
         self.conn.execute(
@@ -140,3 +160,106 @@ class CorpusStore:
                      else json.loads(row["scaling"])),
             question_weight=row["question_weight"],
             provenance=json.loads(row["provenance"]))
+
+    # ------------------------------------------------------------------
+    # Series blobs
+    # ------------------------------------------------------------------
+
+    def put_series(self, qid: str, kind: str,
+                   points: list[tuple[str, object]]) -> None:
+        """Replace the (qid, kind) series. points: (iso_timestamp, value).
+        Sorted on write; mixed naive/aware timestamps within ONE series are
+        the fetcher's responsibility to avoid (each fetcher is internally
+        consistent)."""
+        pts = sorted(points, key=lambda p: p[0])
+        path = self.blobs / f"{_safe(qid)}__{kind}.json"
+        path.write_text(json.dumps(pts))
+        self.conn.execute(
+            "INSERT OR REPLACE INTO series (qid, kind, blob_path, n_points)"
+            " VALUES (?,?,?,?)",
+            (qid, kind, str(path.relative_to(self.root)), len(pts)))
+        self.conn.commit()
+
+    def value_at(self, qid: str, kind: str, t: datetime) -> object | None:
+        """Step-function lookup: last point with ts <= t, else None."""
+        row = self.conn.execute(
+            "SELECT blob_path FROM series WHERE qid = ? AND kind = ?",
+            (qid, kind)).fetchone()
+        if row is None:
+            return None
+        pts = json.loads((self.root / row["blob_path"]).read_text())
+        best = None
+        for ts, value in pts:
+            dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None and t.tzinfo is not None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            elif dt.tzinfo is not None and t.tzinfo is None:
+                t = t.replace(tzinfo=timezone.utc)
+            if dt <= t:
+                best = value
+            else:
+                break
+        return best
+
+    # ------------------------------------------------------------------
+    # Contamination strata
+    # ------------------------------------------------------------------
+
+    def set_contamination(self, qid: str, model_set_hash: str,
+                          stratum: str) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO contamination"
+            " (qid, model_set_hash, stratum) VALUES (?,?,?)",
+            (qid, model_set_hash, stratum))
+        self.conn.commit()
+
+    def get_contamination(self, qid: str,
+                          model_set_hash: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT stratum FROM contamination"
+            " WHERE qid = ? AND model_set_hash = ?",
+            (qid, model_set_hash)).fetchone()
+        return row["stratum"] if row else None
+
+    # ------------------------------------------------------------------
+    # Query
+    # ------------------------------------------------------------------
+
+    def query(self, *, platforms=None, qtypes=None, resolved_only=True,
+              open_after=None, close_before=None, stratum=None,
+              model_set_hash=None, limit=None) -> list[BacktestQuestion]:
+        """Date filters compare ISO-8601 strings lexicographically — fine at
+        date granularity for the formats the fetchers write."""
+        sql = "SELECT q.* FROM questions q"
+        where: list[str] = []
+        args: list = []
+        if stratum is not None:
+            if model_set_hash is None:
+                raise ValueError("stratum filter requires model_set_hash")
+            sql += (" JOIN contamination c ON c.qid = q.qid"
+                    " AND c.model_set_hash = ? AND c.stratum = ?")
+            args += [model_set_hash, stratum]
+        if platforms:
+            where.append(
+                f"q.platform IN ({','.join('?' * len(platforms))})")
+            args += list(platforms)
+        if qtypes:
+            vals = [t.value if isinstance(t, QType) else t for t in qtypes]
+            where.append(f"q.qtype IN ({','.join('?' * len(vals))})")
+            args += vals
+        if resolved_only:
+            where.append("q.resolution IS NOT NULL")
+        if open_after is not None:
+            where.append("q.open_time > ?")
+            args.append(open_after.isoformat())
+        if close_before is not None:
+            where.append("q.scheduled_close_time < ?")
+            args.append(close_before.isoformat())
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY q.qid"
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(limit)
+        return [self._row_to_question(r)
+                for r in self.conn.execute(sql, args).fetchall()]

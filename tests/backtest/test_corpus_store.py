@@ -67,3 +67,136 @@ def test_binary_bool_and_none_resolution_round_trip(tmp_path):
     store.upsert_question(unresolved)
     assert store.get_question("metaculus:1").resolution is True
     assert store.get_question("metaculus:2").resolution is None
+
+
+# ---------------------------------------------------------------------------
+# Task 9: series blobs, value_at, contamination
+# ---------------------------------------------------------------------------
+
+def test_put_series_and_value_at_step_lookup(tmp_path):
+    store = CorpusStore(tmp_path)
+    store.upsert_question(_numeric_question())
+    store.put_series("metaculus:31678", "cp", [
+        ("2026-03-01T00:00:00+00:00", 0.40),
+        ("2026-01-01T00:00:00+00:00", 0.25),     # unsorted on purpose
+        ("2026-05-01T00:00:00+00:00", 0.55),
+    ])
+    # step function: last point with ts <= t
+    assert store.value_at("metaculus:31678", "cp", _utc(2025, 12, 1)) is None
+    assert store.value_at("metaculus:31678", "cp", _utc(2026, 1, 1)) == 0.25
+    assert store.value_at("metaculus:31678", "cp", _utc(2026, 4, 15)) == 0.40
+    assert store.value_at("metaculus:31678", "cp", _utc(2027, 1, 1)) == 0.55
+    # absent kind / absent qid
+    assert store.value_at("metaculus:31678", "market_price",
+                          _utc(2026, 4, 15)) is None
+    assert store.value_at("metaculus:0", "cp", _utc(2026, 4, 15)) is None
+    # put_series REPLACES the series
+    store.put_series("metaculus:31678", "cp",
+                     [("2026-06-01T00:00:00+00:00", 0.9)])
+    assert store.value_at("metaculus:31678", "cp", _utc(2026, 4, 15)) is None
+    # blob lives under blobs/
+    assert list((tmp_path / "blobs").glob("*__cp.json"))
+
+
+def test_value_at_naive_query_against_aware_series(tmp_path):
+    store = CorpusStore(tmp_path)
+    store.put_series("metaculus:31678", "cp",
+                     [("2026-01-01T00:00:00+00:00", 0.25)])
+    assert store.value_at("metaculus:31678", "cp",
+                          datetime(2026, 2, 1)) == 0.25
+
+
+def test_contamination_set_get(tmp_path):
+    store = CorpusStore(tmp_path)
+    assert store.get_contamination("metaculus:1", "h1") is None
+    store.set_contamination("metaculus:1", "h1", "clean")
+    store.set_contamination("metaculus:1", "h2", "contaminated")
+    assert store.get_contamination("metaculus:1", "h1") == "clean"
+    assert store.get_contamination("metaculus:1", "h2") == "contaminated"
+    store.set_contamination("metaculus:1", "h1", "contaminated-confirmed")
+    assert (store.get_contamination("metaculus:1", "h1")
+            == "contaminated-confirmed")
+
+
+# ---------------------------------------------------------------------------
+# Task 9 addendum: WAL/check_same_thread, close/context-manager, falsy float
+# ---------------------------------------------------------------------------
+
+def test_resolution_zero_float_round_trip(tmp_path):
+    """resolution=0.0 must round-trip as 0.0, not None/False (falsy boundary)."""
+    store = CorpusStore(tmp_path)
+    q = replace(_numeric_question(), resolution=0.0)
+    store.upsert_question(q)
+    got = store.get_question(q.qid)
+    assert got.resolution == 0.0
+    assert got.resolution is not None
+    assert got.resolution is not False
+
+
+def test_close_method(tmp_path):
+    """close() should succeed without error."""
+    store = CorpusStore(tmp_path)
+    store.upsert_question(_numeric_question())
+    store.close()  # must not raise
+
+
+def test_context_manager(tmp_path):
+    """CorpusStore as a context manager: data readable inside, conn closed on exit."""
+    with CorpusStore(tmp_path) as store:
+        store.upsert_question(_numeric_question())
+        assert store.get_question("metaculus:31678") is not None
+    # After __exit__, connection is closed; further queries should raise
+    import pytest
+    with pytest.raises(Exception):
+        store.get_question("metaculus:31678")
+
+
+# ---------------------------------------------------------------------------
+# Task 9: query filters
+# ---------------------------------------------------------------------------
+
+def _seed_query_corpus(store):
+    base = _numeric_question()
+    store.upsert_question(replace(
+        base, qid="metaculus:1", qtype=QType.BINARY, resolution=True,
+        scaling=None, open_time=_utc(2026, 5, 1)))
+    store.upsert_question(replace(
+        base, qid="metaculus:2", resolution=None))           # unresolved
+    store.upsert_question(replace(
+        base, qid="polymarket:a", platform="polymarket",
+        qtype=QType.BINARY, resolution=False, scaling=None,
+        open_time=_utc(2026, 1, 10)))
+
+
+def test_query_filters(tmp_path):
+    store = CorpusStore(tmp_path)
+    _seed_query_corpus(store)
+    assert [q.qid for q in store.query()] == ["metaculus:1", "polymarket:a"]
+    assert [q.qid for q in store.query(resolved_only=False)] == \
+        ["metaculus:1", "metaculus:2", "polymarket:a"]
+    assert [q.qid for q in store.query(platforms=["polymarket"])] == \
+        ["polymarket:a"]
+    assert [q.qid for q in store.query(qtypes=[QType.BINARY],
+                                       open_after=_utc(2026, 3, 1))] == \
+        ["metaculus:1"]
+    assert [q.qid for q in store.query(qtypes=["numeric"],
+                                       resolved_only=False)] == \
+        ["metaculus:2"]
+    assert store.query(close_before=_utc(2025, 1, 1)) == []
+    assert len(store.query(limit=1)) == 1
+
+
+def test_query_stratum_requires_hash_and_joins(tmp_path):
+    import pytest
+    store = CorpusStore(tmp_path)
+    _seed_query_corpus(store)
+    store.set_contamination("metaculus:1", "abc123", "clean")
+    store.set_contamination("polymarket:a", "abc123", "contaminated")
+    with pytest.raises(ValueError):
+        store.query(stratum="clean")
+    assert [q.qid for q in store.query(stratum="clean",
+                                       model_set_hash="abc123")] == \
+        ["metaculus:1"]
+    assert [q.qid for q in store.query(stratum="contaminated",
+                                       model_set_hash="abc123")] == \
+        ["polymarket:a"]
