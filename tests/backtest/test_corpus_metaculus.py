@@ -304,12 +304,19 @@ async def test_cp_gap_returns_none_inside_gap(tmp_path, monkeypatch,
 
 # ---------------------------------------------------------------------------
 # Fix 2: scaling normalization — _ingest_detail must normalise raw API fields
-# to the BacktestQuestion.scaling contract keys.
+# to the BacktestQuestion.scaling contract keys, mirroring forecasting-tools
+# BoundedQuestionMixin parsing (_get_bounds_from_api_json /
+# _get_cdf_size_from_json): range_min/range_max/zero_point and
+# inbound_outcome_count live under question.scaling (cdf_size = count + 1);
+# open_lower_bound/open_upper_bound live on question (missing -> open).
 # ---------------------------------------------------------------------------
 
+# Log-scaled continuous numeric question (zero_point non-null).
+# Real API shape: inbound_outcome_count sits INSIDE scaling; the standard
+# continuous question has 200 inbound buckets -> a 201-point CDF.
 DETAIL_NUMERIC = {
     "id": 50000,
-    "title": "Numeric question",
+    "title": "How many widgets shipped by 2027?",
     "status": "resolved",
     "question": {
         "type": "numeric",
@@ -320,58 +327,131 @@ DETAIL_NUMERIC = {
         "actual_resolve_time": "2026-12-02T00:00:00Z",
         "resolution": "42.5",
         "scaling": {
-            "range_min": 0.0,
-            "range_max": 100.0,
-            "zero_point": None,
+            "range_min": 1.0,
+            "range_max": 1000.0,
+            "zero_point": 0.0,            # log scaling
+            "nominal_min": None,
+            "nominal_max": None,
+            "inbound_outcome_count": 200,
         },
         "open_lower_bound": False,
         "open_upper_bound": True,
-        "inbound_outcome_count": 101,
-        "unit": "percent",
-        "aggregations": {"recency_weighted": {"history": []}},
+        "unit": "widgets",
+        "aggregations": {"recency_weighted": {"history": [
+            # numeric history entries also carry the full CDF in
+            # forecast_values (ignored by the fetcher, kept for realism;
+            # truncated — real payloads have cdf_size floats)
+            {"start_time": 1775000000.0, "end_time": None,
+             "centers": [120.0],
+             "forecast_values": [0.0, 0.01, 0.02, 0.5, 0.98, 1.0]},
+        ]}},
     },
 }
 
+# Discrete question: integer buckets centred on 0..7, so the range is padded
+# by half a bucket on each side and bounds are closed.  8 inbound buckets
+# -> a 9-point CDF (bucket edges), NOT 8 — the off-by-one the +1 guards.
+DETAIL_DISCRETE = {
+    "id": 51000,
+    "title": "How many of the 7 launches succeed?",
+    "status": "resolved",
+    "question": {
+        "type": "discrete",
+        "description": "Background.",
+        "resolution_criteria": "Resolves to the count of successes.",
+        "open_time": "2026-01-01T00:00:00Z",
+        "scheduled_close_time": "2026-12-01T00:00:00Z",
+        "actual_resolve_time": "2026-12-02T00:00:00Z",
+        "resolution": "3",
+        "scaling": {
+            "range_min": -0.5,
+            "range_max": 7.5,
+            "zero_point": None,
+            "inbound_outcome_count": 8,
+        },
+        "open_lower_bound": False,
+        "open_upper_bound": False,
+        "unit": "",
+        "aggregations": {"recency_weighted": {"history": [
+            {"start_time": 1775000000.0, "end_time": None,
+             "centers": [3.0],
+             "forecast_values": [0.0, 0.05, 0.2, 0.5, 0.8, 0.9, 0.95,
+                                 0.99, 1.0]},
+        ]}},
+    },
+}
 
-async def test_scaling_normalized_to_contract_keys(tmp_path, monkeypatch,
-                                                   no_throttle):
-    """Numeric question scaling stored under the BacktestQuestion contract keys."""
-    monkeypatch.setenv("METACULUS_TOKEN", "test-token")
+CONTRACT_KEYS = {
+    "range_min", "range_max", "zero_point",
+    "open_lower_bound", "open_upper_bound",
+    "cdf_size", "unit",
+}
 
+
+def _serve(post_id: int, detail: dict):
     async def fake_get(url, params=None, headers=None, client=None):
         if url.endswith("/posts/"):
             return {"next": None,
-                    "results": [{"id": 50000, "title": "Numeric question"}]}
-        if url.endswith("/posts/50000/"):
-            return DETAIL_NUMERIC
+                    "results": [{"id": post_id, "title": detail["title"]}]}
+        if url.endswith(f"/posts/{post_id}/"):
+            return detail
         raise AssertionError(f"unexpected URL {url}")
+    return fake_get
 
-    monkeypatch.setattr(metaculus_mod, "_get_json", fake_get)
+
+async def test_numeric_scaling_normalized_to_contract_keys(
+        tmp_path, monkeypatch, no_throttle):
+    """Log-scaled numeric: scaling stored under the contract keys."""
+    monkeypatch.setenv("METACULUS_TOKEN", "test-token")
+    monkeypatch.setattr(metaculus_mod, "_get_json",
+                        _serve(50000, DETAIL_NUMERIC))
     store = CorpusStore(tmp_path)
     report = await fetch_metaculus(store)
     assert report.fetched == 1
 
     q = store.get_question("metaculus:50000")
     assert q is not None
+    assert q.resolution == 42.5               # numeric resolution -> float
     sc = q.scaling
     assert sc is not None
 
     # Exactly the contract keys — no extras, none missing
-    expected_keys = {
-        "range_min", "range_max", "zero_point",
-        "open_lower_bound", "open_upper_bound",
-        "cdf_size", "unit",
-    }
-    assert set(sc.keys()) == expected_keys
+    assert set(sc.keys()) == CONTRACT_KEYS
 
-    # Values mapped correctly from the fixture
-    assert sc["range_min"] == 0.0
-    assert sc["range_max"] == 100.0
-    assert sc["zero_point"] is None
+    assert sc["range_min"] == 1.0
+    assert sc["range_max"] == 1000.0
+    assert sc["zero_point"] == 0.0            # log scaling preserved
     assert sc["open_lower_bound"] is False
     assert sc["open_upper_bound"] is True
-    assert sc["cdf_size"] == 101
-    assert sc["unit"] == "percent"
+    # 200 inbound buckets -> 201 CDF points (forecasting-tools
+    # _get_cdf_size_from_json: scaling.inbound_outcome_count + 1)
+    assert sc["cdf_size"] == 201
+    assert sc["unit"] == "widgets"
+
+
+async def test_discrete_scaling_buckets_and_closed_bounds(
+        tmp_path, monkeypatch, no_throttle):
+    """Discrete: half-bucket-padded range, closed bounds, count+1 CDF."""
+    monkeypatch.setenv("METACULUS_TOKEN", "test-token")
+    monkeypatch.setattr(metaculus_mod, "_get_json",
+                        _serve(51000, DETAIL_DISCRETE))
+    store = CorpusStore(tmp_path)
+    report = await fetch_metaculus(store)
+    assert report.fetched == 1
+
+    q = store.get_question("metaculus:51000")
+    assert q is not None
+    assert q.resolution == 3.0
+    sc = q.scaling
+    assert set(sc.keys()) == CONTRACT_KEYS
+
+    assert sc["range_min"] == -0.5            # bucket edges, not 0..7
+    assert sc["range_max"] == 7.5
+    assert sc["zero_point"] is None
+    assert sc["open_lower_bound"] is False
+    assert sc["open_upper_bound"] is False
+    assert sc["cdf_size"] == 9                # 8 buckets -> 9 edges
+    assert sc["unit"] == ""
 
 
 async def test_scaling_none_for_binary_question(tmp_path, monkeypatch,
@@ -385,24 +465,42 @@ async def test_scaling_none_for_binary_question(tmp_path, monkeypatch,
     assert q.scaling is None
 
 
-async def test_scaling_cdf_size_fallback(tmp_path, monkeypatch, no_throttle):
-    """When inbound_outcome_count is absent, cdf_size defaults to 201."""
+@pytest.mark.parametrize("mutate", [
+    # key absent entirely -> forecasting-tools KeyError branch -> 201
+    lambda q: q["scaling"].pop("inbound_outcome_count"),
+    # key present but null -> treated as 200 buckets -> 201
+    lambda q: q["scaling"].__setitem__("inbound_outcome_count", None),
+])
+async def test_scaling_cdf_size_fallback(tmp_path, monkeypatch, no_throttle,
+                                         mutate):
+    """Absent or null inbound_outcome_count falls back to cdf_size 201."""
     monkeypatch.setenv("METACULUS_TOKEN", "test-token")
 
     import copy
     detail = copy.deepcopy(DETAIL_NUMERIC)
-    del detail["question"]["inbound_outcome_count"]
+    mutate(detail["question"])
 
-    async def fake_get(url, params=None, headers=None, client=None):
-        if url.endswith("/posts/"):
-            return {"next": None,
-                    "results": [{"id": 50000, "title": "Numeric question"}]}
-        if url.endswith("/posts/50000/"):
-            return detail
-        raise AssertionError(f"unexpected URL {url}")
-
-    monkeypatch.setattr(metaculus_mod, "_get_json", fake_get)
+    monkeypatch.setattr(metaculus_mod, "_get_json", _serve(50000, detail))
     store = CorpusStore(tmp_path)
     await fetch_metaculus(store)
     q = store.get_question("metaculus:50000")
     assert q.scaling["cdf_size"] == 201
+
+
+async def test_scaling_missing_bounds_default_open(tmp_path, monkeypatch,
+                                                   no_throttle):
+    """Missing open_*_bound on question defaults to open (True), mirroring
+    forecasting-tools _get_bounds_from_api_json."""
+    monkeypatch.setenv("METACULUS_TOKEN", "test-token")
+
+    import copy
+    detail = copy.deepcopy(DETAIL_NUMERIC)
+    del detail["question"]["open_lower_bound"]
+    del detail["question"]["open_upper_bound"]
+
+    monkeypatch.setattr(metaculus_mod, "_get_json", _serve(50000, detail))
+    store = CorpusStore(tmp_path)
+    await fetch_metaculus(store)
+    q = store.get_question("metaculus:50000")
+    assert q.scaling["open_lower_bound"] is True
+    assert q.scaling["open_upper_bound"] is True

@@ -144,14 +144,21 @@ def _ingest_detail(store: CorpusStore, post: dict,
     # Normalize scaling to the BacktestQuestion contract keys (spec §3.2).
     # Only numeric/discrete questions carry a scaling dict; all others get None.
     if qtype in (QType.NUMERIC, QType.DISCRETE):
+        # Mirrors forecasting-tools BoundedQuestionMixin: bounds sit on
+        # question (missing/null -> open), inbound_outcome_count sits under
+        # scaling, and the CDF has one more point than inbound buckets
+        # (null/absent count -> 200 buckets -> 201 points).
         raw_scaling = q.get("scaling") or {}
+        inbound_count = raw_scaling.get("inbound_outcome_count")
+        olb = q.get("open_lower_bound")
+        oub = q.get("open_upper_bound")
         scaling: dict | None = {
             "range_min": raw_scaling.get("range_min"),
             "range_max": raw_scaling.get("range_max"),
             "zero_point": raw_scaling.get("zero_point"),
-            "open_lower_bound": q.get("open_lower_bound"),
-            "open_upper_bound": q.get("open_upper_bound"),
-            "cdf_size": q.get("inbound_outcome_count") or 201,
+            "open_lower_bound": True if olb is None else olb,
+            "open_upper_bound": True if oub is None else oub,
+            "cdf_size": (200 if inbound_count is None else inbound_count) + 1,
             "unit": q.get("unit"),
         }
     else:
