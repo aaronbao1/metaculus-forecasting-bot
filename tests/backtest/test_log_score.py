@@ -212,3 +212,24 @@ def test_brier_numeric_not_implemented():
     f = Forecast(qtype=QType.NUMERIC, cdf=build_cdf())
     with pytest.raises(NotImplementedError):
         brier(f, _numeric_q(50.0))
+
+
+def test_brier_mc_resolution_absent_from_options_raises():
+    # brier() must raise ValueError when q.resolution is not among q.options,
+    # matching the behaviour of log_score() for the same scenario.
+    f = Forecast(qtype=QType.MULTIPLE_CHOICE,
+                 mc_probs={"a": 0.5, "b": 0.5})
+    q = _mc_q("c", ("a", "b"))          # "c" is NOT in options
+    with pytest.raises(ValueError, match="resolution"):
+        brier(f, q)
+
+
+def test_resolution_at_range_min_with_open_lower_bound_scores_inbound():
+    # Pinning test: resolution == range_min must land in bucket 1 (in-bounds)
+    # even when open_lower_bound=True.  open_lower_bound does NOT change the
+    # bucket-index logic (value-driven: x < range_min -> boundary, x >= range_min
+    # -> in-bounds), mirroring the Metaculus platform implementation.
+    f = Forecast(qtype=QType.NUMERIC, cdf=build_cdf())
+    q = _numeric_q(0.0, open_lower=True)   # resolution == range_min == 0.0
+    # Uniform CDF -> pdf == 1.0 -> ln(1) == 0
+    assert log_score(f, q) == pytest.approx(0.0, abs=1e-9)

@@ -90,6 +90,9 @@ def _resolution_bucket(x: float, q: BacktestQuestion, n_bins: int) -> int:
     utils/the_math/formulas.py:unscaled_location_to_bucket_index."""
     s = _scaling(q)
     rmin, rmax = float(s["range_min"]), float(s["range_max"])
+    # In/out-of-bounds is intentionally value-driven (x < range_min / x > range_max).
+    # open_lower_bound and open_upper_bound are NOT consulted here — they do not
+    # change bucketing, mirroring the Metaculus platform implementation.
     if x < rmin:
         return 0
     if x > rmax:
@@ -97,6 +100,8 @@ def _resolution_bucket(x: float, q: BacktestQuestion, n_bins: int) -> int:
     u = _unscaled_location(x, q)
     if u >= 1.0:
         return n_bins
+    # == ceil(u*n_bins) 1-indexed; the 1e-10 absorbs fp noise at bin edges
+    # (matches Metaculus u==0 -> bucket 1)
     return max(int(u * n_bins + 1 - 1e-10), 1)
 
 
@@ -150,6 +155,9 @@ def brier(forecast: Forecast, q: BacktestQuestion) -> float:
     if forecast.qtype is QType.MULTIPLE_CHOICE:
         if forecast.mc_probs is None:
             raise ValueError("multiple_choice forecast missing mc_probs")
+        if q.resolution not in q.options:
+            raise ValueError(
+                f"resolution {q.resolution!r} not among question options")
         return sum(
             (float(forecast.mc_probs.get(opt, 0.0))
              - (1.0 if opt == q.resolution else 0.0)) ** 2
