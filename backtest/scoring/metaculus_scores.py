@@ -176,6 +176,42 @@ def baseline_score(forecast: Forecast, q: BacktestQuestion) -> float:
     return 100.0 * (math.log(value) - math.log(chance)) / 2.0
 
 
+def peer_score(forecast: Forecast, others: list[Forecast],
+               q: BacktestQuestion) -> float:
+    """FAQ "Peer score math": 100 * (ln p - ln GM(others)) — equivalently the
+    average log-score difference against every other forecast (the FAQ's
+    worked zero-sum example: log scores -1, 1, 2 give peer values -2.5,
+    +0.5, +2, summing to 0). Continuous/discrete scores are divided by 2.
+    `others` excludes the scored forecast. Empty `others` scores 0."""
+    if not others:
+        return 0.0
+    mine = log_score(forecast, q)
+    mean_others = sum(log_score(o, q) for o in others) / len(others)
+    score = 100.0 * (mine - mean_others)
+    if forecast.qtype in (QType.NUMERIC, QType.DISCRETE):
+        score /= 2.0
+    return score
+
+
+def head_to_head(forecast: Forecast, opponent: Forecast,
+                 q: BacktestQuestion) -> float:
+    """Spot head-to-head vs a single synthetic opponent:
+    100 * ln(p / p_opponent) on the realized outcome (the statistic used in
+    Metaculus's Pros-vs-Bots analyses); continuous/discrete divided by 2.
+    Identical to a peer score with a single other participant."""
+    return peer_score(forecast, [opponent], q)
+
+
+def tournament_take(spot_peer_scores: list[float],
+                    weights: list[float]) -> float:
+    """FAQ "How are my tournament Score, Take, Prize, and Rank calculated?":
+    total = sum(spot peer score * question weight); take = max(total, 0)^2."""
+    if len(spot_peer_scores) != len(weights):
+        raise ValueError("scores and weights must have equal length")
+    total = sum(s * w for s, w in zip(spot_peer_scores, weights))
+    return max(total, 0.0) ** 2
+
+
 def brier(forecast: Forecast, q: BacktestQuestion) -> float:
     """Brier score (not part of the Metaculus score family; reported for
     cross-literature comparability). Binary: (p_yes - outcome)^2, the Halawi/
