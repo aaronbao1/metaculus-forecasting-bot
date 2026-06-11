@@ -73,9 +73,18 @@ def _parse_time(v) -> datetime | None:
 def _cp_points(history: list[dict],
                options: tuple = ()) -> list[tuple[str, object]]:
     """Flatten recency_weighted.history intervals to step points.
-    MC questions (len(values) == len(options)) store an option->prob dict."""
+
+    MC questions (len(values) == len(options)) store an option->prob dict.
+
+    Gap handling: when an entry has a non-null end_time AND either it is the
+    last entry or the next entry's start_time > its end_time, an additional
+    sentinel (end_time, None) is emitted so that value_at returns None inside
+    the gap and after a terminated history.  This matches the semantics of
+    forecasting-tools get_cp_at_time, which returns None outside any interval.
+    """
+    entries = list(history or [])
     pts: list[tuple[str, object]] = []
-    for entry in history or []:
+    for i, entry in enumerate(entries):
         start = entry.get("start_time")
         values = entry.get("centers") or entry.get("means")
         if start is None or not values:
@@ -87,6 +96,19 @@ def _cp_points(history: list[dict],
         else:
             value = list(values)
         pts.append((_parse_time(start).isoformat(), value))
+
+        # Emit a gap sentinel when this interval terminates.
+        end_time = entry.get("end_time")
+        if end_time is not None:
+            is_last = (i == len(entries) - 1)
+            if is_last:
+                gap = True
+            else:
+                # Check whether the next valid entry starts after this end.
+                next_start = entries[i + 1].get("start_time")
+                gap = (next_start is None or next_start > end_time)
+            if gap:
+                pts.append((_parse_time(end_time).isoformat(), None))
     return pts
 
 
@@ -119,6 +141,21 @@ def _ingest_detail(store: CorpusStore, post: dict,
     if resolution is None and is_resolved:
         withheld.append("resolution")
     qtype = QType(q["type"])
+    # Normalize scaling to the BacktestQuestion contract keys (spec §3.2).
+    # Only numeric/discrete questions carry a scaling dict; all others get None.
+    if qtype in (QType.NUMERIC, QType.DISCRETE):
+        raw_scaling = q.get("scaling") or {}
+        scaling: dict | None = {
+            "range_min": raw_scaling.get("range_min"),
+            "range_max": raw_scaling.get("range_max"),
+            "zero_point": raw_scaling.get("zero_point"),
+            "open_lower_bound": q.get("open_lower_bound"),
+            "open_upper_bound": q.get("open_upper_bound"),
+            "cdf_size": q.get("inbound_outcome_count") or 201,
+            "unit": q.get("unit"),
+        }
+    else:
+        scaling = None
     if qtype is QType.BINARY and isinstance(resolution, str):
         # "annulled"/"ambiguous" stay None (unscoreable, not withheld)
         resolution = {"yes": True, "no": False}.get(resolution.lower())
@@ -149,7 +186,7 @@ def _ingest_detail(store: CorpusStore, post: dict,
         actual_resolve_time=actual_resolve_time,
         resolution=resolution,
         options=tuple(q.get("options") or ()),
-        scaling=q.get("scaling"),
+        scaling=scaling,
         question_weight=float(q.get("question_weight") or 1.0),
         provenance={"source": "metaculus",
                     "fetched_at": datetime.now(timezone.utc).isoformat(),

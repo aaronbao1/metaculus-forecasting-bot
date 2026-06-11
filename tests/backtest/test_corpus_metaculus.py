@@ -238,3 +238,171 @@ async def test_limit_caps_detail_fetches(tmp_path, monkeypatch, fake_api,
     monkeypatch.setenv("METACULUS_TOKEN", "test-token")
     report = await fetch_metaculus(CorpusStore(tmp_path), limit=1)
     assert report.fetched == 1
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: CP gap handling — sentinel (end_time, None) so value_at returns
+# None inside a gap between intervals and after a terminated history.
+# History: interval A 100→150, gap 150–300, interval B 300→null.
+# ---------------------------------------------------------------------------
+
+DETAIL_GAPPED_CP = {
+    "id": 40000,
+    "title": "Gapped CP question",
+    "status": "resolved",
+    "question": {
+        "type": "binary",
+        "description": "Background.",
+        "resolution_criteria": "Resolves YES if ...",
+        "open_time": "2020-01-01T00:00:00Z",
+        "scheduled_close_time": "2030-01-01T00:00:00Z",
+        "actual_resolve_time": "2029-01-01T00:00:00Z",
+        "resolution": "yes",
+        "aggregations": {"recency_weighted": {"history": [
+            # interval A: [100, 150)
+            {"start_time": 100.0, "end_time": 150.0, "centers": [0.30]},
+            # gap: 150–300 (no interval covers this range)
+            # interval B: [300, ∞)
+            {"start_time": 300.0, "end_time": None, "centers": [0.70]},
+        ]}},
+    },
+}
+
+
+async def test_cp_gap_returns_none_inside_gap(tmp_path, monkeypatch,
+                                              no_throttle):
+    """value_at in a gap between terminated and next interval returns None."""
+    monkeypatch.setenv("METACULUS_TOKEN", "test-token")
+
+    async def fake_get(url, params=None, headers=None, client=None):
+        if url.endswith("/posts/"):
+            return {"next": None,
+                    "results": [{"id": 40000, "title": "Gapped CP question"}]}
+        if url.endswith("/posts/40000/"):
+            return DETAIL_GAPPED_CP
+        raise AssertionError(f"unexpected URL {url}")
+
+    monkeypatch.setattr(metaculus_mod, "_get_json", fake_get)
+    store = CorpusStore(tmp_path)
+    report = await fetch_metaculus(store)
+    assert report.fetched == 1
+
+    from datetime import datetime, timezone
+
+    # Inside interval A → value present
+    t_in_a = datetime.fromtimestamp(120.0, tz=timezone.utc)
+    assert store.value_at("metaculus:40000", "cp", t_in_a) == 0.30
+
+    # Inside the gap (after A ended, before B started) → None
+    t_gap = datetime.fromtimestamp(200.0, tz=timezone.utc)
+    assert store.value_at("metaculus:40000", "cp", t_gap) is None
+
+    # Inside interval B → value present
+    t_in_b = datetime.fromtimestamp(350.0, tz=timezone.utc)
+    assert store.value_at("metaculus:40000", "cp", t_in_b) == 0.70
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: scaling normalization — _ingest_detail must normalise raw API fields
+# to the BacktestQuestion.scaling contract keys.
+# ---------------------------------------------------------------------------
+
+DETAIL_NUMERIC = {
+    "id": 50000,
+    "title": "Numeric question",
+    "status": "resolved",
+    "question": {
+        "type": "numeric",
+        "description": "Background.",
+        "resolution_criteria": "Resolves to the measured value.",
+        "open_time": "2026-01-01T00:00:00Z",
+        "scheduled_close_time": "2026-12-01T00:00:00Z",
+        "actual_resolve_time": "2026-12-02T00:00:00Z",
+        "resolution": "42.5",
+        "scaling": {
+            "range_min": 0.0,
+            "range_max": 100.0,
+            "zero_point": None,
+        },
+        "open_lower_bound": False,
+        "open_upper_bound": True,
+        "inbound_outcome_count": 101,
+        "unit": "percent",
+        "aggregations": {"recency_weighted": {"history": []}},
+    },
+}
+
+
+async def test_scaling_normalized_to_contract_keys(tmp_path, monkeypatch,
+                                                   no_throttle):
+    """Numeric question scaling stored under the BacktestQuestion contract keys."""
+    monkeypatch.setenv("METACULUS_TOKEN", "test-token")
+
+    async def fake_get(url, params=None, headers=None, client=None):
+        if url.endswith("/posts/"):
+            return {"next": None,
+                    "results": [{"id": 50000, "title": "Numeric question"}]}
+        if url.endswith("/posts/50000/"):
+            return DETAIL_NUMERIC
+        raise AssertionError(f"unexpected URL {url}")
+
+    monkeypatch.setattr(metaculus_mod, "_get_json", fake_get)
+    store = CorpusStore(tmp_path)
+    report = await fetch_metaculus(store)
+    assert report.fetched == 1
+
+    q = store.get_question("metaculus:50000")
+    assert q is not None
+    sc = q.scaling
+    assert sc is not None
+
+    # Exactly the contract keys — no extras, none missing
+    expected_keys = {
+        "range_min", "range_max", "zero_point",
+        "open_lower_bound", "open_upper_bound",
+        "cdf_size", "unit",
+    }
+    assert set(sc.keys()) == expected_keys
+
+    # Values mapped correctly from the fixture
+    assert sc["range_min"] == 0.0
+    assert sc["range_max"] == 100.0
+    assert sc["zero_point"] is None
+    assert sc["open_lower_bound"] is False
+    assert sc["open_upper_bound"] is True
+    assert sc["cdf_size"] == 101
+    assert sc["unit"] == "percent"
+
+
+async def test_scaling_none_for_binary_question(tmp_path, monkeypatch,
+                                                fake_api, no_throttle):
+    """Binary questions must store scaling=None (not the raw dict)."""
+    monkeypatch.setenv("METACULUS_TOKEN", "test-token")
+    store = CorpusStore(tmp_path)
+    await fetch_metaculus(store, limit=1)
+    q = store.get_question("metaculus:31678")
+    assert q is not None
+    assert q.scaling is None
+
+
+async def test_scaling_cdf_size_fallback(tmp_path, monkeypatch, no_throttle):
+    """When inbound_outcome_count is absent, cdf_size defaults to 201."""
+    monkeypatch.setenv("METACULUS_TOKEN", "test-token")
+
+    import copy
+    detail = copy.deepcopy(DETAIL_NUMERIC)
+    del detail["question"]["inbound_outcome_count"]
+
+    async def fake_get(url, params=None, headers=None, client=None):
+        if url.endswith("/posts/"):
+            return {"next": None,
+                    "results": [{"id": 50000, "title": "Numeric question"}]}
+        if url.endswith("/posts/50000/"):
+            return detail
+        raise AssertionError(f"unexpected URL {url}")
+
+    monkeypatch.setattr(metaculus_mod, "_get_json", fake_get)
+    store = CorpusStore(tmp_path)
+    await fetch_metaculus(store)
+    q = store.get_question("metaculus:50000")
+    assert q.scaling["cdf_size"] == 201
