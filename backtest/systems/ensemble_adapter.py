@@ -233,32 +233,43 @@ class CalibratedEnsembleAdapter:
         # stable across horizons of the same configuration.
         return config_hash(self.cfg)
 
+    def _guard_calibration(self, run_cfg: "BotConfig",
+                           stages: list[StageRecord]) -> "BotConfig":
+        """Calibration leakage guard.
+
+        If a fitted Platt file exists in run_cfg.calibration_dir but the
+        caller has not explicitly opted in (allow_calibration=True), redirect
+        calibration_dir to a guaranteed-nonexistent sentinel path so that
+        load_platt() returns the identity map — preventing future-fitted Platt
+        parameters from contaminating backtest results.  Also appends an
+        explanatory StageRecord so the guard is always visible in the artifact.
+
+        Returns the (possibly modified) run_cfg.
+        """
+        platt_file = Path(run_cfg.calibration_dir) / "binary.json"
+        if platt_file.exists() and not self.allow_calibration:
+            sentinel = run_cfg.calibration_dir + ".disabled-for-backtest"
+            logger.warning(
+                "calibration leakage guard: platt file present at %s "
+                "but allow_calibration=False; redirecting calibration_dir "
+                "to nonexistent sentinel %s (identity Platt will be used)",
+                platt_file, sentinel)
+            run_cfg = replace(run_cfg, calibration_dir=sentinel)
+            stages.append(StageRecord(
+                stage="calibration",
+                outputs={"note": (
+                    "platt disabled for backtest "
+                    "(file present but allow_calibration=False); "
+                    "identity Platt applied")}))
+        return run_cfg
+
     async def forecast(self, q: BacktestQuestion,
                        ctx: AsOfContext) -> ForecastArtifact:
         stages: list[StageRecord] = []
         token = ACTIVE_CONTEXT.set(ctx)
         try:
             run_cfg = replace(self.cfg, as_of=ctx.as_of)
-            # Calibration leakage guard: if a fitted Platt exists but the
-            # caller has not explicitly opted in (allow_calibration=True),
-            # redirect calibration_dir to a guaranteed-nonexistent path so
-            # load_platt() returns the identity map.
-            from pathlib import Path as _Path
-            _platt_file = _Path(run_cfg.calibration_dir) / "binary.json"
-            if _platt_file.exists() and not self.allow_calibration:
-                sentinel = run_cfg.calibration_dir + ".disabled-for-backtest"
-                logger.warning(
-                    "calibration leakage guard: platt file present at %s "
-                    "but allow_calibration=False; redirecting calibration_dir "
-                    "to nonexistent sentinel %s (identity Platt will be used)",
-                    _platt_file, sentinel)
-                run_cfg = replace(run_cfg, calibration_dir=sentinel)
-                stages.append(StageRecord(
-                    stage="calibration",
-                    outputs={"note": (
-                        "platt disabled for backtest "
-                        f"(file present but allow_calibration=False); "
-                        f"identity Platt applied")}))
+            run_cfg = self._guard_calibration(run_cfg, stages)
             bot = _BacktestEnsembleBot(run_cfg, ctx, stages)
             started = _now_iso()
             res = await bot_research.run_research(_question_dict(q), run_cfg)
@@ -284,22 +295,7 @@ class CalibratedEnsembleAdapter:
         token = ACTIVE_CONTEXT.set(ctx)
         try:
             run_cfg = replace(self.cfg, as_of=ctx.as_of)
-            # Calibration leakage guard (same as forecast()).
-            _platt_file = Path(run_cfg.calibration_dir) / "binary.json"
-            if _platt_file.exists() and not self.allow_calibration:
-                sentinel = run_cfg.calibration_dir + ".disabled-for-backtest"
-                logger.warning(
-                    "calibration leakage guard: platt file present at %s "
-                    "but allow_calibration=False; redirecting calibration_dir "
-                    "to nonexistent sentinel %s (identity Platt will be used)",
-                    _platt_file, sentinel)
-                run_cfg = replace(run_cfg, calibration_dir=sentinel)
-                stages.append(StageRecord(
-                    stage="calibration",
-                    outputs={"note": (
-                        "platt disabled for backtest "
-                        f"(file present but allow_calibration=False); "
-                        f"identity Platt applied")}))
+            run_cfg = self._guard_calibration(run_cfg, stages)
             bot = _BacktestEnsembleBot(run_cfg, ctx, stages)
             stages.append(StageRecord(
                 stage="research",
@@ -330,16 +326,7 @@ class CalibratedEnsembleAdapter:
         stages: list[StageRecord] = []
         try:
             run_cfg = replace(self.cfg, as_of=ctx.as_of)
-            # Calibration leakage guard (same as forecast()).
-            _platt_file = Path(run_cfg.calibration_dir) / "binary.json"
-            if _platt_file.exists() and not self.allow_calibration:
-                sentinel = run_cfg.calibration_dir + ".disabled-for-backtest"
-                logger.warning(
-                    "calibration leakage guard: platt file present at %s "
-                    "but allow_calibration=False; redirecting calibration_dir "
-                    "to nonexistent sentinel %s (identity Platt will be used)",
-                    _platt_file, sentinel)
-                run_cfg = replace(run_cfg, calibration_dir=sentinel)
+            run_cfg = self._guard_calibration(run_cfg, stages)
             probs = [float(p) for p in member_outputs]
             started = _now_iso()
             raw = aggregate_binary(probs, run_cfg.aggregation_method)
