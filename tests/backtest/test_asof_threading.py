@@ -114,3 +114,26 @@ async def test_numeric_prompt_uses_as_of_when_set(monkeypatch, tmp_path):
         lower_bound_message="lo", upper_bound_message="hi")
     assert "Today's date: 2024-06-15" in captured[0]
     assert "(10 days remaining)" in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# Naive-datetime safety: backtest as_of coercion
+# ---------------------------------------------------------------------------
+
+def test_days_remaining_naive_as_of_with_aware_close():
+    """Naive as_of (e.g. from a backtest fixture) must not silently return 0.0.
+    The fix coerces naive inputs to UTC so the arithmetic succeeds."""
+    naive_now = datetime(2024, 6, 15, 12, 0)           # no tzinfo
+    aware_close = datetime(2024, 6, 25, 12, 0, tzinfo=timezone.utc)
+    result = _days_remaining(aware_close.isoformat(), now=naive_now)
+    assert result == pytest.approx(10.0, abs=1e-6)
+
+
+def test_days_remaining_naive_close_iso_with_aware_now():
+    """A close_iso string that round-trips through fromisoformat without a tz
+    component (rare but possible) is also coerced to UTC correctly."""
+    aware_now = datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc)
+    # fromisoformat of a plain ISO string produces a naive datetime
+    naive_close_iso = "2024-06-25T12:00:00"             # no Z / +00:00
+    result = _days_remaining(naive_close_iso, now=aware_now)
+    assert result == pytest.approx(10.0, abs=1e-6)
