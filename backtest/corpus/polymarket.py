@@ -45,6 +45,16 @@ async def _get_json(url: str, params: dict | None = None,
         return resp.json()
 
 
+def _maybe_json(v):
+    """Return v parsed from JSON if it is a string, else return v as-is.
+
+    Gamma serves outcomes/outcomePrices/clobTokenIds as JSON-encoded strings
+    today.  If the API ever starts returning real arrays, json.loads would
+    raise TypeError; this helper keeps both forms working.
+    """
+    return json.loads(v) if isinstance(v, str) else v
+
+
 def _parse_dt(v) -> datetime | None:
     if v in (None, ""):
         return None
@@ -53,12 +63,12 @@ def _parse_dt(v) -> datetime | None:
 
 async def _ingest_market(store: CorpusStore, m: dict,
                          report: FetchReport) -> bool:
-    outcomes = [str(o).lower() for o in json.loads(m["outcomes"])]
+    outcomes = [str(o).lower() for o in _maybe_json(m["outcomes"])]
     if sorted(outcomes) != ["no", "yes"]:
         return False                       # only Yes/No binaries
     yes_idx = outcomes.index("yes")        # map index via outcomes field
-    prices = [float(p) for p in json.loads(m["outcomePrices"])]
-    clob_ids = json.loads(m.get("clobTokenIds") or "[]")
+    prices = [float(p) for p in _maybe_json(m["outcomePrices"])]
+    clob_ids = _maybe_json(m.get("clobTokenIds") or "[]")
 
     yes_price = prices[yes_idx]
     if yes_price >= 0.99:

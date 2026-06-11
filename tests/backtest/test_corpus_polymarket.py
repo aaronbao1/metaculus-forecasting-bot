@@ -98,6 +98,43 @@ async def test_fetch_polymarket_passes_filters_and_limit(
     assert seen["params"][0]["start_date_min"] == "2026-01-01"
 
 
+async def test_fetch_polymarket_tolerates_array_typed_gamma_fields(
+        tmp_path, monkeypatch):
+    """If Gamma ever returns real arrays instead of JSON-encoded strings,
+    _ingest_market must still succeed (no TypeError from json.loads)."""
+    array_market = {
+        "id": "999001",
+        "question": "Will array fields work?",
+        "conditionId": "0xdef",
+        "slug": "array-fields",
+        "description": "Tests array-typed Gamma fields.",
+        # ARRAYS instead of JSON-encoded strings:
+        "outcomes": ["No", "Yes"],
+        "outcomePrices": ["0", "1"],
+        "clobTokenIds": ["7777", "8888"],
+        "startDate": "2026-01-01T00:00:00Z",
+        "endDate": "2026-06-01T00:00:00Z",
+        "closed": True, "volumeNum": 100000.0,
+    }
+
+    async def fake_get(url, params=None, headers=None, client=None):
+        if "gamma-api" in url:
+            return [array_market] if params.get("offset", 0) == 0 else []
+        return PRICES_HISTORY
+
+    monkeypatch.setattr(polymarket_mod, "_get_json", fake_get)
+    store = CorpusStore(tmp_path)
+    report = await fetch_polymarket(store)
+
+    # must NOT land in errors — should ingest cleanly
+    assert report.errors == [], f"Unexpected errors: {report.errors}"
+    assert report.fetched == 1
+
+    q = store.get_question("polymarket:999001")
+    assert q is not None
+    assert q.resolution is True   # Yes price "1" at index 1
+
+
 async def test_fetch_polymarket_isolates_bad_market(tmp_path, monkeypatch):
     bad = [{"id": "X", "question": "broken", "outcomes": "not json",
             "outcomePrices": "[]", "clobTokenIds": "[]"}] + GAMMA_PAGE[:1]
