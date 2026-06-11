@@ -146,3 +146,54 @@ async def test_numeric_pipeline_medians_percentiles(monkeypatch):
     assert result.median_percentiles[50.0] == 40
     assert 2.5 in result.median_percentiles
     assert 97.5 in result.median_percentiles
+
+
+def make_triage_bot(monkeypatch, tier_reply="Tier: NEAR_CERTAIN",
+                    **cfg_overrides):
+    cfg = BotConfig(ensemble=[EnsembleMember("fake/model-a", runs=3),
+                              EnsembleMember("fake/model-b", runs=3)],
+                    parser_model="fake/triage", **cfg_overrides)
+    bot = CalibratedEnsembleBot(bot_config=cfg)
+    calls = []
+
+    async def fake_invoke(self, member_and_prompt):
+        member, prompt = member_and_prompt
+        calls.append(member.model)
+        if member.model == "fake/triage":
+            return tier_reply
+        return CANNED_BINARY
+    monkeypatch.setattr(CalibratedEnsembleBot, "_invoke_model", fake_invoke,
+                        raising=True)
+    return bot, calls
+
+
+async def test_tier_is_classified_and_attached_even_when_routing_off(monkeypatch):
+    bot, calls = make_triage_bot(monkeypatch)       # triage_enabled defaults False
+    result = await bot.run_binary_ensemble(**COMMON)
+    assert result.tier == "near_certain"
+    assert calls.count("fake/triage") == 1
+    assert len(result.member_probs) == 6            # full ensemble: no routing
+
+
+async def test_triage_routing_reduces_runs_for_near_certain(monkeypatch):
+    bot, calls = make_triage_bot(monkeypatch, triage_enabled=True,
+                                 triage_fast_runs=2, min_members=2)
+    result = await bot.run_binary_ensemble(**COMMON)
+    assert result.tier == "near_certain"
+    assert len(result.member_probs) == 4            # 2 models x 2 fast runs
+
+
+async def test_triage_routing_keeps_full_ensemble_for_goldilocks(monkeypatch):
+    bot, calls = make_triage_bot(monkeypatch, tier_reply="Tier: GOLDILOCKS",
+                                 triage_enabled=True)
+    result = await bot.run_binary_ensemble(**COMMON)
+    assert result.tier == "goldilocks"
+    assert len(result.member_probs) == 6
+
+
+async def test_triage_failure_is_unknown_and_full_ensemble(monkeypatch):
+    bot, calls = make_triage_bot(monkeypatch, tier_reply="cannot classify",
+                                 triage_enabled=True)
+    result = await bot.run_binary_ensemble(**COMMON)
+    assert result.tier == "unknown"
+    assert len(result.member_probs) == 6

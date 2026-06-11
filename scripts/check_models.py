@@ -13,9 +13,10 @@ load_dotenv()
 async def main() -> None:
     from forecasting_tools import GeneralLlm
     models = [m.model for m in DEFAULT_CONFIG.ensemble]
-    models += [DEFAULT_CONFIG.search_model, DEFAULT_CONFIG.parser_model]
+    models += [DEFAULT_CONFIG.search_model, DEFAULT_CONFIG.parser_model,
+               DEFAULT_CONFIG.supervisor_model]
     ok = True
-    for slug in models:
+    for slug in dict.fromkeys(models):     # dedupe, keep order
         try:
             llm = GeneralLlm(model=f"openrouter/{slug}", temperature=0)
             out = await llm.invoke("Reply with the single word: ready")

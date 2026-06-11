@@ -51,3 +51,15 @@ def parse_percentiles(text: str) -> dict:
     if len(out) < 5:
         raise ParseError(f"only {len(out)} percentiles found, need >= 5")
     return out
+
+
+TIERS = ("near_certain", "goldilocks", "noise")
+
+
+def parse_tier(text: str) -> str:
+    """Last 'Tier: X' line; X in TIERS (case-insensitive)."""
+    matches = re.findall(r"Tier:\s*(near_certain|goldilocks|noise)",
+                         text, re.IGNORECASE)
+    if not matches:
+        raise ParseError("no 'Tier: X' line found")
+    return matches[-1].lower()

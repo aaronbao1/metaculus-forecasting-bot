@@ -97,6 +97,35 @@ Percentile 90: XX
 Percentile 97.5: XX
 """)
 
+TRIAGE_PROMPT = """You are triaging forecasting questions by how much analysis each deserves
+(Tetlock's first commandment). Classify the question below into exactly one
+tier:
+
+- NEAR_CERTAIN: the outcome is already effectively determined — a careful
+  reader of the resolution criteria would put it below 5% or above 95% today.
+- GOLDILOCKS: genuinely uncertain AND analyzable — reference classes,
+  evidence, or scheduled catalysts exist that reward careful research. Most
+  questions belong here. When in doubt, choose GOLDILOCKS.
+- NOISE: essentially unknowable before the close date — no analyzable
+  evidence advantage is available to anyone (pure chance, opaque actors,
+  no precedents).
+
+QUESTION
+{question_text}
+
+RESOLUTION CRITERIA
+{resolution_criteria}
+
+FINE PRINT
+{fine_print}
+
+Today's date: {today}
+Question closes: {close_date}
+
+Give a one-sentence justification, then the very last line must be exactly:
+Tier: NEAR_CERTAIN or GOLDILOCKS or NOISE   (pick one)
+"""
+
 SUPERVISOR_PROMPT = """You are the head forecaster reconciling a panel whose members disagree
 sharply. Do not blindly average — investigate why they disagree and decide.
 
