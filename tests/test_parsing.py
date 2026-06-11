@@ -48,3 +48,4 @@ Percentile 97.5: 10,000"""
 def test_parse_percentiles_raises_when_too_few():
     with pytest.raises(ParseError):
         parse_percentiles("Percentile 50: 10")
+

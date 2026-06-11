@@ -18,3 +18,10 @@ def test_config_hash_is_stable_and_sensitive():
 def test_submit_defaults_false(monkeypatch):
     monkeypatch.delenv("SUBMIT_PREDICTION", raising=False)
     assert BotConfig().submit_predictions is False
+
+
+def test_config_hash_sensitive_to_research_fields():
+    assert config_hash(BotConfig(research_timeout_s=301.0)) != \
+        config_hash(DEFAULT_CONFIG)
+    assert config_hash(BotConfig(research_providers=("asknews",))) != \
+        config_hash(DEFAULT_CONFIG)

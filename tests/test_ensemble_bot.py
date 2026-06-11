@@ -36,12 +36,29 @@ async def test_binary_pipeline_aggregates_and_caps(monkeypatch):
     # six identical members at 0.64 -> trimmed GMO = 0.64, inside caps
     assert result.final == pytest.approx(0.64, abs=1e-6)
     assert len(result.member_probs) == 6
+    assert result.spread == pytest.approx(0.0)
 
 
 async def test_binary_extreme_consensus_gets_capped(monkeypatch):
     bot = make_bot(monkeypatch, "Probability: 99.9%")
     result = await bot.run_binary_ensemble(**COMMON)
     assert result.final == 0.98          # hard cap
+
+
+async def test_binary_spread_is_recorded_for_divergent_members(monkeypatch):
+    cfg = BotConfig(ensemble=[EnsembleMember("fake/model-a", runs=3),
+                              EnsembleMember("fake/model-b", runs=3)])
+    bot = CalibratedEnsembleBot(bot_config=cfg)
+
+    async def fake_invoke(self, member_and_prompt):
+        member, prompt = member_and_prompt
+        return {"fake/model-a": "Probability: 20%",
+                "fake/model-b": "Probability: 70%"}[member.model]
+
+    monkeypatch.setattr(CalibratedEnsembleBot, "_invoke_model", fake_invoke,
+                        raising=True)
+    result = await bot.run_binary_ensemble(**COMMON)
+    assert result.spread == pytest.approx(0.5)
 
 
 async def test_skips_when_too_few_members_survive(monkeypatch):

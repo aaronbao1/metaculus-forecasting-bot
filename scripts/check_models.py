@@ -15,7 +15,7 @@ async def main() -> None:
     models = [m.model for m in DEFAULT_CONFIG.ensemble]
     models += [DEFAULT_CONFIG.search_model, DEFAULT_CONFIG.parser_model]
     ok = True
-    for slug in models:
+    for slug in dict.fromkeys(models):     # dedupe, keep order
         try:
             llm = GeneralLlm(model=f"openrouter/{slug}", temperature=0)
             out = await llm.invoke("Reply with the single word: ready")
