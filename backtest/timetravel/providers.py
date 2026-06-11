@@ -303,3 +303,84 @@ async def _exa_historical_research(question: dict, cfg) -> str:
         return ""
     return (f"Web results crawled on or before {ctx.as_of.date().isoformat()} "
             "(Exa endCrawlDate):\n" + "\n".join(f"- {p}" for p in parts))
+
+
+# --- serper_dated (PRAGMATIC ONLY) + provider installation ------------------
+
+SERPER_URL = "https://google.serper.dev/search"
+SERPER_NUM = 10
+
+
+async def _serper_dated_research(question: dict, cfg) -> str:
+    """Date-filtered live Google search (Serper, tbs cdr params). Live search
+    date filters measurably leak (71-81% of questions affected), so this
+    provider is pragmatic-only, every result is leak-screened per document,
+    and survivors are stamped date_trust=low."""
+    ctx = _require_context("serper_dated")
+    if ctx.cutoff_mode != "pragmatic":
+        raise RuntimeError(
+            "serper_dated is pragmatic-only: live search date filters leak "
+            f"(cutoff_mode={ctx.cutoff_mode!r})")
+    if ctx.llm is None:
+        raise RuntimeError(
+            "serper_dated: AsOfContext.llm is required for the leak screen")
+    api_key = os.getenv("SERPER_API_KEY")
+    if not api_key:
+        raise RuntimeError("SERPER_API_KEY not configured")
+    t = ctx.as_of
+    tbs = f"cdr:1,cd_min:1/1/1990,cd_max:{t.month}/{t.day}/{t.year}"
+    data = await _http_post_json(
+        SERPER_URL,
+        payload={"q": question["question_text"], "num": SERPER_NUM,
+                 "tbs": tbs},
+        headers={"X-API-KEY": api_key, "Content-Type": "application/json"})
+    docs = [{"title": r.get("title", ""), "url": r.get("link"),
+             "date": r.get("date"), "snippet": r.get("snippet", "")}
+            for r in (data or {}).get("organic") or []]
+    if not docs:
+        return ""
+    from backtest.timetravel.leakage import screen_docs
+    survivors = await screen_docs(docs, ctx.as_of, ctx.llm)
+    parts = []
+    for d in survivors:
+        ctx.record(LedgerEntry(
+            provider="serper_dated", query=question["question_text"],
+            url=d["url"], doc_date=d.get("date"), date_trust="low",
+            note="pragmatic-mode dated search result (survived leak screen)"))
+        parts.append(f"[{d.get('date') or 'undated'}] {d['title']} — "
+                     f"{d['snippet']} ({d['url']})")
+    if not parts:
+        return ""
+    return ("Date-filtered web search results (PRAGMATIC mode; "
+            "date_trust=low; leak-screened):\n"
+            + "\n".join(f"- {p}" for p in parts))
+
+
+HISTORICAL_PROVIDERS = (
+    _asknews_historical_research,
+    _gdelt_wayback_research,
+    _exa_historical_research,
+    _markets_historical_research,
+    _serper_dated_research,
+)
+
+_HISTORICAL_SECTION_TITLES = {
+    "markets_historical": "Prediction-market signals (price at T)",
+    "asknews_historical": "News search (AskNews archive at T)",
+    "gdelt_wayback": "News archive (GDELT+Wayback ≤ T)",
+    "exa_historical": "Web search (Exa crawl ≤ T)",
+    "serper_dated": "Web search (date-filtered, leak-screened)",
+}
+
+
+def install_historical_providers() -> None:
+    """Register the historical providers into bot.research's module namespace
+    so its existing globals()-dispatch (bot/research.py run_research) resolves
+    them by config name, e.g. research_providers=("asknews_historical", ...).
+    Also registers friendly section titles into bot.research._SECTION_TITLES
+    so composed research reports render polished headers.
+    Additive runtime registration — no bot/ file edits, no live-path change."""
+    import bot.research
+    for fn in HISTORICAL_PROVIDERS:
+        setattr(bot.research, fn.__name__, fn)
+    bot.research._SECTION_TITLES.update(_HISTORICAL_SECTION_TITLES)
