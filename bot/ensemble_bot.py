@@ -53,10 +53,10 @@ class NumericEnsembleResult:
     member_models: list = field(default_factory=list)
 
 
-def _days_remaining(close_iso: str) -> float:
+def _days_remaining(close_iso: str, now: datetime | None = None) -> float:
     try:
         close = datetime.fromisoformat(str(close_iso).replace("Z", "+00:00"))
-        return max(days_until(close), 0.0)
+        return max(days_until(close, now=now), 0.0)
     except Exception:
         return 0.0
 
@@ -125,9 +125,11 @@ class CalibratedEnsembleBot:
         prompt = BINARY_PROMPT.format(
             question_text=question_text, background_info=background_info,
             resolution_criteria=resolution_criteria, fine_print=fine_print,
-            research=research, today=date.today().isoformat(),
+            research=research,
+            today=(self.cfg.as_of.date() if self.cfg.as_of
+                   else date.today()).isoformat(),
             close_date=str(close_iso)[:10],
-            days_remaining=_days_remaining(close_iso))
+            days_remaining=_days_remaining(close_iso, now=self.cfg.as_of))
         texts, models = await self._fan_out(prompt)
         probs, kept = self._parse_survivors(texts, models, parse_binary)
         raw = aggregate_binary(probs, self.cfg.aggregation_method)
@@ -144,9 +146,11 @@ class CalibratedEnsembleBot:
         prompt = MC_PROMPT.format(
             question_text=question_text, background_info=background_info,
             resolution_criteria=resolution_criteria, fine_print=fine_print,
-            research=research, today=date.today().isoformat(),
+            research=research,
+            today=(self.cfg.as_of.date() if self.cfg.as_of
+                   else date.today()).isoformat(),
             close_date=str(close_iso)[:10],
-            days_remaining=_days_remaining(close_iso),
+            days_remaining=_days_remaining(close_iso, now=self.cfg.as_of),
             options=", ".join(options))
         texts, models = await self._fan_out(prompt)
         dicts, kept = self._parse_survivors(
@@ -162,9 +166,11 @@ class CalibratedEnsembleBot:
         prompt = NUMERIC_PROMPT.format(
             question_text=question_text, background_info=background_info,
             resolution_criteria=resolution_criteria, fine_print=fine_print,
-            research=research, today=date.today().isoformat(),
+            research=research,
+            today=(self.cfg.as_of.date() if self.cfg.as_of
+                   else date.today()).isoformat(),
             close_date=str(close_iso)[:10],
-            days_remaining=_days_remaining(close_iso),
+            days_remaining=_days_remaining(close_iso, now=self.cfg.as_of),
             units=units or "(see question)",
             lower_bound_message=lower_bound_message,
             upper_bound_message=upper_bound_message)
