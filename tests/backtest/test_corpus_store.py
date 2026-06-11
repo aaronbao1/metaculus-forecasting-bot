@@ -186,6 +186,58 @@ def test_query_filters(tmp_path):
     assert len(store.query(limit=1)) == 1
 
 
+# ---------------------------------------------------------------------------
+# Store hardening: UTC-normalised timestamps, collision-proof blobs, empty series
+# ---------------------------------------------------------------------------
+
+def test_mixed_offset_series_sorted_by_true_utc_time(tmp_path):
+    """Points given with mixed offsets must be stored in true chronological
+    (UTC) order so value_at returns the chronologically-correct value.
+
+    The tricky case: raw-string sort and UTC sort differ.
+      "2026-06-01T14:00:00-05:00" sorts BEFORE "2026-06-01T16:00:00+02:00"
+      lexicographically (14 < 16) but is LATER in UTC (19:00 vs 14:00).
+    """
+    store = CorpusStore(tmp_path)
+    store.put_series("metaculus:31678", "cp", [
+        ("2026-06-01T14:00:00-05:00", 0.90),   # UTC 19:00 — latest
+        ("2026-06-01T16:00:00+02:00", 0.10),   # UTC 14:00 — earliest
+        ("2026-06-01T15:00:00Z",      0.50),   # UTC 15:00 — middle
+    ])
+    # Before earliest point (UTC 13:59)
+    assert store.value_at("metaculus:31678", "cp",
+                          _utc(2026, 6, 1, 13, 59)) is None
+    # Between earliest (14:00) and middle (15:00): expect 0.10
+    assert store.value_at("metaculus:31678", "cp",
+                          _utc(2026, 6, 1, 14, 30)) == 0.10
+    # Between middle (15:00) and latest (19:00): expect 0.50
+    assert store.value_at("metaculus:31678", "cp",
+                          _utc(2026, 6, 1, 17)) == 0.50
+    # After all points: expect 0.90
+    assert store.value_at("metaculus:31678", "cp",
+                          _utc(2026, 6, 1, 20)) == 0.90
+
+
+def test_blob_filename_collision_distinct_qids(tmp_path):
+    """'p:0xAB/CD' and 'p:0xAB_CD' must NOT share a blob file; each qid's
+    value_at must return its own value."""
+    store = CorpusStore(tmp_path)
+    qid_a = "p:0xAB/CD"
+    qid_b = "p:0xAB_CD"
+    store.put_series(qid_a, "cp", [("2026-01-01T00:00:00+00:00", 0.11)])
+    store.put_series(qid_b, "cp", [("2026-01-01T00:00:00+00:00", 0.99)])
+    probe = _utc(2026, 6, 1)
+    assert store.value_at(qid_a, "cp", probe) == 0.11
+    assert store.value_at(qid_b, "cp", probe) == 0.99
+
+
+def test_empty_series_value_at_returns_none(tmp_path):
+    """put_series([]) writes an empty series; value_at must return None."""
+    store = CorpusStore(tmp_path)
+    store.put_series("metaculus:31678", "cp", [])
+    assert store.value_at("metaculus:31678", "cp", _utc(2026, 6, 1)) is None
+
+
 def test_query_stratum_requires_hash_and_joins(tmp_path):
     import pytest
     store = CorpusStore(tmp_path)

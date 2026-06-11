@@ -12,6 +12,7 @@ with no withheld marker).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass, field
@@ -168,11 +169,34 @@ class CorpusStore:
     def put_series(self, qid: str, kind: str,
                    points: list[tuple[str, object]]) -> None:
         """Replace the (qid, kind) series. points: (iso_timestamp, value).
-        Sorted on write; mixed naive/aware timestamps within ONE series are
-        the fetcher's responsibility to avoid (each fetcher is internally
-        consistent)."""
-        pts = sorted(points, key=lambda p: p[0])
-        path = self.blobs / f"{_safe(qid)}__{kind}.json"
+
+        All timestamps are normalised to UTC ISO-8601 on write and sorted by
+        their true UTC datetime, so mixed-offset inputs ("+02:00", "Z",
+        "-05:00") are stored and retrieved in correct chronological order.
+        Naive timestamps are treated as UTC.
+
+        Blob filenames include a SHA-1 disambiguator so that qids whose safe
+        representations collide (e.g. "p:0xAB/CD" vs "p:0xAB_CD") never
+        overwrite each other.  Layout:
+            blobs/<safe(qid)>__<sha1(qid)[:8]>__<kind>.json
+        """
+        def _to_utc_iso(ts: str) -> tuple[datetime, str]:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt_utc = dt.astimezone(timezone.utc)
+            return dt_utc, dt_utc.isoformat()
+
+        normalized: list[tuple[str, object]] = []
+        sort_keys: list[datetime] = []
+        for ts, value in points:
+            dt_utc, iso_utc = _to_utc_iso(ts)
+            normalized.append((iso_utc, value))
+            sort_keys.append(dt_utc)
+        pts = [p for _, p in sorted(zip(sort_keys, normalized))]
+
+        qid_hash = hashlib.sha1(qid.encode()).hexdigest()[:8]
+        path = self.blobs / f"{_safe(qid)}__{qid_hash}__{_safe(kind)}.json"
         path.write_text(json.dumps(pts))
         self.conn.execute(
             "INSERT OR REPLACE INTO series (qid, kind, blob_path, n_points)"
@@ -187,14 +211,16 @@ class CorpusStore:
             (qid, kind)).fetchone()
         if row is None:
             return None
+        # missing blob = corrupt store, fail loud
         pts = json.loads((self.root / row["blob_path"]).read_text())
+        # Normalise the probe time once so every comparison is tz-aware.
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
         best = None
         for ts, value in pts:
-            dt = datetime.fromisoformat(ts)
-            if dt.tzinfo is None and t.tzinfo is not None:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-            elif dt.tzinfo is not None and t.tzinfo is None:
-                t = t.replace(tzinfo=timezone.utc)
             if dt <= t:
                 best = value
             else:
