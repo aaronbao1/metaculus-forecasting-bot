@@ -3,8 +3,14 @@
 GET /markets?status=settled (cursor pagination), then per market
 GET /series/{series}/markets/{ticker}/candlesticks with
 period_interval=1440 (daily) and include_latest_before_start=true.
-Candlestick prices are in CENTS (1-99) -> /100 to probability;
-price.close may be null on no-trade days -> yes_bid/yes_ask mid fallback.
+
+Candlestick price encoding changed on 2026-03-12:
+  - Live endpoint (post-2026-03-12): fixed-point dollar STRINGS in
+    price.close_dollars (e.g. "0.5600"), already in [0, 1].
+  - /historical archive path (pre-2026-03-12): integer cents in
+    price.close (e.g. 56), divide by 100 to get probability.
+price.close_dollars may be absent on no-trade days -> fall back to
+yes_bid/yes_ask mid (close_dollars first, then close cents).
 
 ROLLING WINDOW WARNING: the live candlesticks API keeps only ~3 months of
 history (GET /historical/cutoff reports the boundary); older series must
@@ -56,13 +62,17 @@ def _epoch(dt: datetime | None) -> int | None:
 
 
 def _candle_prob(c: dict) -> float | None:
-    price = (c.get("price") or {}).get("close")
-    if price is not None:
-        return float(price) / 100.0
-    bid = (c.get("yes_bid") or {}).get("close")
-    ask = (c.get("yes_ask") or {}).get("close")
-    if bid is not None and ask is not None:
-        return (float(bid) + float(ask)) / 2.0 / 100.0
+    price = c.get("price") or {}
+    if price.get("close_dollars") is not None:
+        return float(price["close_dollars"])          # already dollars 0-1
+    if price.get("close") is not None:                # legacy /historical archive path
+        return float(price["close"]) / 100.0
+    bid = c.get("yes_bid") or {}
+    ask = c.get("yes_ask") or {}
+    if bid.get("close_dollars") is not None and ask.get("close_dollars") is not None:
+        return (float(bid["close_dollars"]) + float(ask["close_dollars"])) / 2.0
+    if bid.get("close") is not None and ask.get("close") is not None:
+        return (float(bid["close"]) + float(ask["close"])) / 2.0 / 100.0
     return None
 
 
@@ -71,6 +81,10 @@ async def _ingest_market(store: CorpusStore, m: dict,
     ticker = m["ticker"]
     qid = f"kalshi:{ticker}"
     result = (m.get("result") or "").lower()
+    if result == "scalar":
+        report.errors.append(
+            f"skipped {qid}: scalar market (non-binary)")
+        return
     resolution = {"yes": True, "no": False}.get(result)
     open_time = _parse_dt(m.get("open_time"))
     close_time = _parse_dt(m.get("close_time"))
