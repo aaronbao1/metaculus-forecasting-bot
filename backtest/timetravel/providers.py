@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 
 from backtest.core import LedgerEntry
 from backtest.timetravel.asof import ACTIVE_CONTEXT, AsOfContext
@@ -124,3 +125,159 @@ async def _asknews_historical_research(question: dict, cfg) -> str:
     return ("Historical news snapshots (AskNews archive, ingestion-time, "
             f"end_timestamp={ctx.as_of.isoformat()}):\n"
             + "\n".join(f"- {p}" for p in parts))
+
+
+# --- shared HTTP seams (monkeypatch targets in tests; never hit in CI) -----
+
+HTTP_TIMEOUT_S = 30.0
+
+
+async def _http_get_json(url: str, params: dict):
+    import httpx
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S,
+                                 follow_redirects=True) as client:
+        resp = await client.get(url, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def _http_get_text(url: str) -> str:
+    import httpx
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S,
+                                 follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.text
+
+
+async def _http_post_json(url: str, payload: dict, headers: dict):
+    import httpx
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S,
+                                 follow_redirects=True) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+
+# --- GDELT DOC 2.0 + Wayback (DIY RetroSearch; strongest snapshot trust) ----
+
+GDELT_DOC_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
+WAYBACK_CDX_URL = "http://web.archive.org/cdx/search/cdx"
+GDELT_MAX_DOCS = 6
+GDELT_WINDOWS = 2            # 3-month ArtList windows stepping back from T
+GDELT_DOC_CHARS = 1500
+
+
+def _gdelt_ts(dt: datetime) -> str:
+    return dt.strftime("%Y%m%d%H%M%S")
+
+
+def _strip_html(html: str) -> str:
+    text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+async def _wayback_snapshot_before(url: str, t: datetime):
+    """Latest Wayback capture at or before t -> (raw_id_url, iso_ts) or None.
+    CDX JSON output: first row is the header; limit=-1 returns the last
+    matching capture."""
+    rows = await _http_get_json(WAYBACK_CDX_URL, params={
+        "url": url, "output": "json", "to": _gdelt_ts(t),
+        "filter": "statuscode:200", "limit": "-1"})
+    if not rows or len(rows) < 2:
+        return None
+    ts, original = rows[-1][1], rows[-1][2]
+    raw = f"https://web.archive.org/web/{ts}id_/{original}"
+    return raw, datetime.strptime(ts, "%Y%m%d%H%M%S").isoformat()
+
+
+async def _gdelt_wayback_research(question: dict, cfg) -> str:
+    """GDELT ArtList URL enumeration (3-month windows ending at T — ArtList
+    only searches a trailing window, so we page windows backwards), then for
+    each URL the latest Wayback capture <= T fetched in raw id_ mode. An
+    article with no pre-T capture is dropped: not provably pre-T."""
+    ctx = _require_context("gdelt_wayback")
+    articles = []
+    for w in range(GDELT_WINDOWS):
+        end = ctx.as_of - timedelta(days=90 * w)
+        start = end - timedelta(days=90)
+        try:
+            data = await _http_get_json(GDELT_DOC_URL, params={
+                "query": question["question_text"], "mode": "ArtList",
+                "format": "json", "maxrecords": GDELT_MAX_DOCS,
+                "sort": "hybridrel",
+                "startdatetime": _gdelt_ts(start),
+                "enddatetime": _gdelt_ts(end)})
+        except Exception as e:
+            logger.warning("GDELT window %d failed: %s", w, e)
+            continue
+        articles.extend((data or {}).get("articles") or [])
+        if len(articles) >= GDELT_MAX_DOCS:
+            break
+    parts = []
+    for art in articles[:GDELT_MAX_DOCS]:
+        url = art.get("url")
+        if not url:
+            continue
+        try:
+            snap = await _wayback_snapshot_before(url, ctx.as_of)
+        except Exception as e:
+            logger.warning("Wayback CDX lookup failed for %s: %s", url, e)
+            continue
+        if snap is None:
+            continue
+        raw_url, snap_iso = snap
+        try:
+            text = _strip_html(await _http_get_text(raw_url))[:GDELT_DOC_CHARS]
+        except Exception as e:
+            logger.warning("Wayback fetch failed for %s: %s", raw_url, e)
+            continue
+        ctx.record(LedgerEntry(
+            provider="gdelt_wayback", query=question["question_text"],
+            url=raw_url, doc_date=snap_iso, date_trust="snapshot",
+            note=f"Wayback capture <= {ctx.as_of.isoformat()} of {url}"))
+        parts.append(f"[snapshot {snap_iso}] {art.get('title', url)}\n{text}")
+    if not parts:
+        return ""
+    return ("Archived web snapshots (GDELT URL enumeration + Wayback "
+            "captures taken on or before T):\n\n" + "\n\n".join(parts))
+
+
+# --- Exa endCrawlDate (strict-allowed, semi-trusted) ------------------------
+
+EXA_SEARCH_URL = "https://api.exa.ai/search"
+EXA_NUM_RESULTS = 6
+EXA_DOC_CHARS = 1000
+
+
+async def _exa_historical_research(question: dict, cfg) -> str:
+    """Exa search filtered to pages crawled on or before T. Allowed in strict
+    mode but semi-trusted: crawl date >> publication metadata, unaudited —
+    every ledger entry carries the flag."""
+    ctx = _require_context("exa_historical")
+    api_key = os.getenv("EXA_API_KEY")
+    if not api_key:
+        raise RuntimeError("EXA_API_KEY not configured")
+    data = await _http_post_json(
+        EXA_SEARCH_URL,
+        payload={"query": question["question_text"],
+                 "endCrawlDate": ctx.as_of.isoformat(),
+                 "numResults": EXA_NUM_RESULTS,
+                 "contents": {"text": {"maxCharacters": EXA_DOC_CHARS}}},
+        headers={"x-api-key": api_key, "Content-Type": "application/json"})
+    parts = []
+    for r in (data or {}).get("results") or []:
+        url = r.get("url")
+        published = r.get("publishedDate")
+        ctx.record(LedgerEntry(
+            provider="exa_historical", query=question["question_text"],
+            url=url, doc_date=published, date_trust="publisher",
+            note="semi-trusted: endCrawlDate filter; crawl date >> "
+                 "publication metadata, unaudited"))
+        parts.append(f"[{published or 'undated'}] {r.get('title', url)} — "
+                     f"{(r.get('text') or '')[:EXA_DOC_CHARS]} ({url})")
+    if not parts:
+        return ""
+    return (f"Web results crawled on or before {ctx.as_of.date().isoformat()} "
+            "(Exa endCrawlDate):\n" + "\n".join(f"- {p}" for p in parts))
