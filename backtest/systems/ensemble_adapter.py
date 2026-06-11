@@ -18,11 +18,15 @@ import logging
 from dataclasses import replace
 from datetime import datetime, timezone
 
+from pathlib import Path
+
 from backtest.core import (BacktestQuestion, Forecast, ForecastArtifact,
                            QType, StageRecord)
 from backtest.corpus.model_releases import model_set_hash
 from backtest.timetravel.asof import ACTIVE_CONTEXT, AsOfContext
 from bot import research as bot_research
+from bot.aggregation import aggregate_binary
+from bot.calibration import calibrate_binary, load_platt
 from bot.config import BotConfig, config_hash
 from bot.distributions import percentiles_to_cdf
 from bot.ensemble_bot import CalibratedEnsembleBot
@@ -271,6 +275,96 @@ class CalibratedEnsembleAdapter:
                                   error=f"{type(e).__name__}: {e}")
         finally:
             ACTIVE_CONTEXT.reset(token)
+
+    async def from_research_text(self, q: BacktestQuestion, ctx: AsOfContext,
+                                 research_text: str) -> ForecastArtifact:
+        """Stage entry point: skip run_research entirely and forecast from
+        the given (frozen) research text — isolates downstream stages."""
+        stages: list[StageRecord] = []
+        token = ACTIVE_CONTEXT.set(ctx)
+        try:
+            run_cfg = replace(self.cfg, as_of=ctx.as_of)
+            # Calibration leakage guard (same as forecast()).
+            _platt_file = Path(run_cfg.calibration_dir) / "binary.json"
+            if _platt_file.exists() and not self.allow_calibration:
+                sentinel = run_cfg.calibration_dir + ".disabled-for-backtest"
+                logger.warning(
+                    "calibration leakage guard: platt file present at %s "
+                    "but allow_calibration=False; redirecting calibration_dir "
+                    "to nonexistent sentinel %s (identity Platt will be used)",
+                    _platt_file, sentinel)
+                run_cfg = replace(run_cfg, calibration_dir=sentinel)
+                stages.append(StageRecord(
+                    stage="calibration",
+                    outputs={"note": (
+                        "platt disabled for backtest "
+                        f"(file present but allow_calibration=False); "
+                        f"identity Platt applied")}))
+            bot = _BacktestEnsembleBot(run_cfg, ctx, stages)
+            stages.append(StageRecord(
+                stage="research",
+                inputs={"injected": True},
+                outputs={"text": research_text, "provider": "injected"},
+                started_at=_now_iso(), ended_at=_now_iso()))
+            fc = await self._dispatch(bot, q, research_text, stages)
+            return self._artifact(q, ctx, fc, stages)
+        except Exception as e:
+            logger.warning("from_research_text failed for %s: %s", q.qid, e)
+            return self._artifact(q, ctx, None, stages,
+                                  error=f"{type(e).__name__}: {e}")
+        finally:
+            ACTIVE_CONTEXT.reset(token)
+
+    async def from_member_forecasts(self, q: BacktestQuestion,
+                                    ctx: AsOfContext,
+                                    member_outputs: list) -> ForecastArtifact:
+        """Stage entry point: bypass research and the LLM entirely; run
+        aggregation + calibration on pre-computed member outputs.
+
+        BINARY-ONLY for MVP — member_outputs is a list[float] of member
+        probabilities. Other question types raise NotImplementedError
+        (a programming error, not a runtime failure)."""
+        if q.qtype is not QType.BINARY:
+            raise NotImplementedError(
+                "from_member_forecasts is binary-only for MVP")
+        stages: list[StageRecord] = []
+        try:
+            run_cfg = replace(self.cfg, as_of=ctx.as_of)
+            # Calibration leakage guard (same as forecast()).
+            _platt_file = Path(run_cfg.calibration_dir) / "binary.json"
+            if _platt_file.exists() and not self.allow_calibration:
+                sentinel = run_cfg.calibration_dir + ".disabled-for-backtest"
+                logger.warning(
+                    "calibration leakage guard: platt file present at %s "
+                    "but allow_calibration=False; redirecting calibration_dir "
+                    "to nonexistent sentinel %s (identity Platt will be used)",
+                    _platt_file, sentinel)
+                run_cfg = replace(run_cfg, calibration_dir=sentinel)
+            probs = [float(p) for p in member_outputs]
+            started = _now_iso()
+            raw = aggregate_binary(probs, run_cfg.aggregation_method)
+            stages.append(StageRecord(
+                stage="aggregation",
+                inputs={"member_probs": probs,
+                        "method": run_cfg.aggregation_method},
+                outputs={"aggregate_raw": raw},
+                started_at=started, ended_at=_now_iso()))
+            platt = load_platt(Path(run_cfg.calibration_dir) / "binary.json")
+            final = calibrate_binary(raw, platt,
+                                     run_cfg.cap_lo, run_cfg.cap_hi)
+            stages.append(StageRecord(
+                stage="calibration",
+                inputs={"aggregate_raw": raw, "cap_lo": run_cfg.cap_lo,
+                        "cap_hi": run_cfg.cap_hi},
+                outputs={"final": final}))
+            return self._artifact(q, ctx,
+                                  Forecast(qtype=QType.BINARY,
+                                           binary_prob=final), stages)
+        except Exception as e:
+            logger.warning("from_member_forecasts failed for %s: %s",
+                           q.qid, e)
+            return self._artifact(q, ctx, None, stages,
+                                  error=f"{type(e).__name__}: {e}")
 
     async def _dispatch(self, bot: _BacktestEnsembleBot, q: BacktestQuestion,
                         research_text: str,
