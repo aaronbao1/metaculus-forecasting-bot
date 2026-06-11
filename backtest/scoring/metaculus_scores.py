@@ -183,6 +183,8 @@ def peer_score(forecast: Forecast, others: list[Forecast],
     worked zero-sum example: log scores -1, 1, 2 give peer values -2.5,
     +0.5, +2, summing to 0). Continuous/discrete scores are divided by 2.
     `others` excludes the scored forecast. Empty `others` scores 0."""
+    if any(o.qtype is not forecast.qtype for o in others):
+        raise ValueError("peer_score requires all forecasts to share one qtype")
     if not others:
         return 0.0
     mine = log_score(forecast, q)

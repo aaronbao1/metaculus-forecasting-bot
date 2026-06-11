@@ -197,6 +197,19 @@ def test_baseline_expected_value_matches_faq_extremes_table():
         assert ev == pytest.approx(expected, abs=0.6)
 
 
+def test_peer_score_raises_on_mixed_qtypes():
+    # Guard: all forecasts must share the same qtype.  An MC 'mine' with a
+    # binary entry in 'others' on an MC question must raise ValueError, not
+    # silently mis-score (float resolution evaluated via truthiness).
+    opts = ("a", "b", "c")
+    q = _mc_q("b", opts)
+    mine = Forecast(qtype=QType.MULTIPLE_CHOICE,
+                    mc_probs={"a": 0.2, "b": 0.5, "c": 0.3})
+    binary_interloper = Forecast(qtype=QType.BINARY, binary_prob=0.7)
+    with pytest.raises(ValueError, match="qtype"):
+        peer_score(mine, [binary_interloper], q)
+
+
 def test_clamps_keep_all_scores_finite():
     # Degenerate probabilities never produce infinities (clamp [0.001, 0.999]).
     q_yes = _binary_q(True)
