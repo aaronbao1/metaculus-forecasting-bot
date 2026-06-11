@@ -75,3 +75,34 @@ def test_difficulty_adjust_preserves_paired_differences():
 
 def test_difficulty_adjust_empty():
     assert difficulty_adjust({}) == {}
+
+
+# ---------------------------------------------------------------------------
+# New hardening tests (TDD — must fail before fixes are applied)
+# ---------------------------------------------------------------------------
+
+def test_paired_t_all_zero_diffs():
+    """All-zero diffs → t=0, p=1 deliberately (scipy returns NaN for sd=0)."""
+    out = paired_t([0.0, 0.0, 0.0])
+    assert out == {"mean": 0.0, "t": 0.0, "p": 1.0}
+
+
+def test_difficulty_adjust_disconnected_panel_raises():
+    """A and B share no question → ValueError about disconnected panel."""
+    scores = {
+        ("A", "q1"): 0.5, ("A", "q2"): 0.6,
+        ("B", "q3"): 0.4, ("B", "q4"): 0.7,
+    }
+    with pytest.raises(ValueError, match="connected"):
+        difficulty_adjust(scores)
+
+
+def test_difficulty_adjust_transitively_connected_panel_ok():
+    """A:q1,q2; B:q2,q3; C:q3,q4 — all transitively connected, no error."""
+    scores = {
+        ("A", "q1"): 0.5, ("A", "q2"): 0.6,
+        ("B", "q2"): 0.4, ("B", "q3"): 0.7,
+        ("C", "q3"): 0.3, ("C", "q4"): 0.8,
+    }
+    result = difficulty_adjust(scores)
+    assert set(result) == set(scores)

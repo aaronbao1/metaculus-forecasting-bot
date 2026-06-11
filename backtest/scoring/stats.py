@@ -26,7 +26,14 @@ def paired_bootstrap(diffs: list[float], n: int = 10_000, seed: int = 0) -> dict
 
 def paired_t(diffs: list[float]) -> dict:
     """Two-sided one-sample t-test of mean(diffs) == 0.
-    Returns {"mean", "t", "p"}."""
+    Returns {"mean", "t", "p"}.
+
+    When all diffs are zero the standard deviation is zero and scipy's
+    ttest_1samp returns NaN for both t and p.  This function deliberately
+    returns t=0.0, p=1.0 instead: a zero mean with zero spread is not
+    evidence against the null, so p=1 is the correct frequentist answer.
+    (all-zero diffs -> t=0, p=1, deliberately unlike scipy's NaN)
+    """
     arr = np.asarray(diffs, dtype=float)
     if arr.size < 2:
         raise ValueError("paired_t needs at least two differences")
@@ -50,6 +57,35 @@ def detectable_effect(n: int, sd: float) -> float:
     return 2.0 * float(sd) / math.sqrt(n)
 
 
+def _panel_components(scores: dict) -> int:
+    """Return the number of connected components in the bipartite
+    system-question graph implied by *scores*.
+
+    Nodes are systems and questions; an edge exists for every (system, qid)
+    key.  We use union-find so the traversal is O(N α(N)) on the key count.
+    """
+    parent: dict = {}
+
+    def find(x):
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent.get(x, x), parent.get(x, x))
+            x = parent.get(x, x)
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for s, qid in scores:
+        # Namespace system/question nodes so identical strings don't collide.
+        union(("s", s), ("q", qid))
+
+    roots = {find(("s", s)) for s, _ in scores}
+    roots |= {find(("q", qid)) for _, qid in scores}
+    return len(roots)
+
+
 def difficulty_adjust(scores: dict) -> dict:
     """Two-way fixed effects b_ij = alpha_i + gamma_j + eps (system i,
     question j), solved with np.linalg.lstsq (minimum-norm solution for the
@@ -58,9 +94,22 @@ def difficulty_adjust(scores: dict) -> dict:
     — and the adjusted score is b~ = b - gamma_hat (spec §6.4, ForecastBench
     updated difficulty-adjustment methodology).
 
-    `scores` maps (system, qid) -> score; returns the same keys."""
+    `scores` maps (system, qid) -> score; returns the same keys.
+
+    Raises ValueError if the bipartite system-question graph has more than one
+    connected component (disconnected panel): in that case the lstsq solution
+    is under-identified across components and the returned adjustments would be
+    fabricated relative offsets.  Transitively connected panels (e.g. A shares
+    q2 with B, B shares q3 with C) are accepted.
+    """
     if not scores:
         return {}
+    n_components = _panel_components(scores)
+    if n_components > 1:
+        raise ValueError(
+            f"difficulty_adjust requires a connected system-question panel; "
+            f"got {n_components} components"
+        )
     systems = sorted({s for s, _ in scores})
     questions = sorted({qid for _, qid in scores})
     s_index = {s: i for i, s in enumerate(systems)}
