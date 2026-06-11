@@ -41,7 +41,10 @@ def _prompt_args(question: dict) -> dict:
 
 
 async def _asknews_research(question: dict, cfg: BotConfig) -> str:
-    if not (os.getenv("ASKNEWS_CLIENT_ID") and os.getenv("ASKNEWS_SECRET")):
+    # AskNewsSearcher accepts either OAuth (client id + secret) or an API key
+    has_oauth = bool(os.getenv("ASKNEWS_CLIENT_ID")
+                     and os.getenv("ASKNEWS_SECRET"))
+    if not (has_oauth or os.getenv("ASKNEWS_API_KEY")):
         raise RuntimeError("AskNews credentials not configured")
     from forecasting_tools import AskNewsSearcher
     searcher = AskNewsSearcher()

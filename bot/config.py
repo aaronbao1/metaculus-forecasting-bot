@@ -25,7 +25,7 @@ def _default_ensemble() -> list[EnsembleMember]:
     return [
         EnsembleMember("openai/gpt-5.4", runs=3, temperature=0.5),
         EnsembleMember("anthropic/claude-opus-4-6", runs=3, temperature=0.5),
-        EnsembleMember("google/gemini-3.1-pro", runs=3, temperature=0.5),
+        EnsembleMember("google/gemini-3.1-pro-preview", runs=3, temperature=0.5),
     ]
 
 
