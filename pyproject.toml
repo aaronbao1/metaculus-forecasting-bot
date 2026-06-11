@@ -14,8 +14,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
-[tool.setuptools]
-packages = ["bot"]
+[tool.setuptools.packages.find]
+include = ["bot*", "backtest*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
