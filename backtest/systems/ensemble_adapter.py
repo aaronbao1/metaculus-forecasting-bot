@@ -54,8 +54,7 @@ def _common_fields(q: BacktestQuestion) -> dict:
         background_info=q.description,
         resolution_criteria=q.resolution_criteria,
         fine_print=q.fine_print,
-        close_iso=(q.scheduled_close_time.isoformat()
-                   if q.scheduled_close_time else ""))
+        close_iso=str(q.scheduled_close_time or ""))
 
 
 class _BacktestEnsembleBot(CalibratedEnsembleBot):
@@ -164,6 +163,9 @@ async def _forecast_numeric(bot: _BacktestEnsembleBot, q: BacktestQuestion,
     if int(scaling.get("cdf_size") or 201) != 201:
         raise NotImplementedError(
             "cdf_size != 201 (discrete grids) unsupported in MVP")
+    if scaling.get("zero_point") is not None:
+        raise NotImplementedError(
+            "log-scaled question: linear-grid CDF not faithful; deferred")
     lo, hi = scaling["range_min"], scaling["range_max"]
     open_lo = bool(scaling.get("open_lower_bound"))
     open_hi = bool(scaling.get("open_upper_bound"))
@@ -202,10 +204,19 @@ _HANDLERS = {
 
 
 class CalibratedEnsembleAdapter:
-    """ForecastSystem implementation wrapping the live ensemble bot."""
+    """ForecastSystem implementation wrapping the live ensemble bot.
 
-    def __init__(self, cfg: BotConfig | None = None):
+    allow_calibration: when False (default) and a fitted binary.json exists in
+    cfg.calibration_dir, the adapter replaces calibration_dir with a sentinel
+    nonexistent path so load_platt() returns the identity map — preventing a
+    future-fitted Platt from contaminating backtest results.  Set True only
+    when the caller has verified the Platt snapshot is as-of-correct.
+    """
+
+    def __init__(self, cfg: BotConfig | None = None,
+                 allow_calibration: bool = False):
         self.cfg = cfg or BotConfig()
+        self.allow_calibration = allow_calibration
         self.name = "calibrated_ensemble"
 
     @classmethod
@@ -224,6 +235,26 @@ class CalibratedEnsembleAdapter:
         token = ACTIVE_CONTEXT.set(ctx)
         try:
             run_cfg = replace(self.cfg, as_of=ctx.as_of)
+            # Calibration leakage guard: if a fitted Platt exists but the
+            # caller has not explicitly opted in (allow_calibration=True),
+            # redirect calibration_dir to a guaranteed-nonexistent path so
+            # load_platt() returns the identity map.
+            from pathlib import Path as _Path
+            _platt_file = _Path(run_cfg.calibration_dir) / "binary.json"
+            if _platt_file.exists() and not self.allow_calibration:
+                sentinel = run_cfg.calibration_dir + ".disabled-for-backtest"
+                logger.warning(
+                    "calibration leakage guard: platt file present at %s "
+                    "but allow_calibration=False; redirecting calibration_dir "
+                    "to nonexistent sentinel %s (identity Platt will be used)",
+                    _platt_file, sentinel)
+                run_cfg = replace(run_cfg, calibration_dir=sentinel)
+                stages.append(StageRecord(
+                    stage="calibration",
+                    outputs={"note": (
+                        "platt disabled for backtest "
+                        f"(file present but allow_calibration=False); "
+                        f"identity Platt applied")}))
             bot = _BacktestEnsembleBot(run_cfg, ctx, stages)
             started = _now_iso()
             res = await bot_research.run_research(_question_dict(q), run_cfg)

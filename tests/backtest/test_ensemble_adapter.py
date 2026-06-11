@@ -236,3 +236,148 @@ async def test_numeric_nonstandard_cdf_size_is_error_artifact(
     art = await adapter.forecast(_numeric_q(cdf_size=101), ctx)
     assert art.forecast is None
     assert "NotImplementedError" in art.error
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 — calibration leakage guard
+# ---------------------------------------------------------------------------
+
+import json as _json
+
+
+def _write_platt(path, a=1.5, b=0.2):
+    """Write a NON-identity Platt JSON file; a=1.5 b=0.2 visibly shifts 0.64."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps({"a": a, "b": b, "n_fit": 200}))
+
+
+def _single_member_cfg(tmp_path, calib_dir=None, **kw):
+    """Config with one member (runs=2) so min_members=1 is needed for leakage tests."""
+    return BotConfig(
+        ensemble=[EnsembleMember("fake/model-a", runs=2, temperature=0.3)],
+        min_members=1,
+        calibration_dir=str(calib_dir or (tmp_path / "calib")),
+        log_path=str(tmp_path / "forecasts.jsonl"),
+        **kw)
+
+
+async def test_calibration_leakage_guard_disabled_by_default(
+        tmp_path, stub_research):
+    """With a real binary.json present and allow_calibration=False (default)
+    the adapter must produce the SAME final prob as if the file were absent
+    (identity Platt applied, not the fitted one)."""
+    calib_dir = tmp_path / "calib"
+    _write_platt(calib_dir / "binary.json")  # a=1.5, b=0.2 → non-identity
+
+    adapter = CalibratedEnsembleAdapter(
+        _single_member_cfg(tmp_path, calib_dir=calib_dir))
+    # default: allow_calibration=False
+
+    art = await adapter.forecast(_binary_q(),
+                                 AsOfContext(as_of=AS_OF, llm=StubLLM()))
+
+    assert art.error is None
+    # Identity Platt + caps → 0.64 exactly; non-identity would shift this
+    assert art.forecast.binary_prob == pytest.approx(0.64, abs=1e-4), (
+        f"Got {art.forecast.binary_prob}; Platt was not suppressed")
+
+    # Stage record must note the suppression
+    cal_stages = [s for s in art.stages if s.stage == "calibration"]
+    notes = " ".join(str(s.outputs) for s in cal_stages)
+    assert "platt disabled" in notes.lower() or "disabled" in notes.lower()
+
+
+async def test_calibration_leakage_guard_opt_in(tmp_path, stub_research):
+    """With allow_calibration=True the Platt map IS applied (prob != 0.64)."""
+    calib_dir = tmp_path / "calib"
+    _write_platt(calib_dir / "binary.json")  # a=1.5, b=0.2
+
+    adapter = CalibratedEnsembleAdapter(
+        _single_member_cfg(tmp_path, calib_dir=calib_dir),
+        allow_calibration=True)
+
+    art = await adapter.forecast(_binary_q(),
+                                 AsOfContext(as_of=AS_OF, llm=StubLLM()))
+
+    assert art.error is None
+    # Non-identity Platt (a=1.5, b=0.2) moves prob away from 0.64
+    assert art.forecast.binary_prob != pytest.approx(0.64, abs=1e-3), (
+        "Platt was NOT applied even with allow_calibration=True")
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — close_iso parity: scheduled_close_time=None should give ""
+# ---------------------------------------------------------------------------
+
+async def test_close_iso_none_gives_empty_string(tmp_path, stub_research):
+    """A BacktestQuestion with no scheduled_close_time must not raise and the
+    close_iso arg passed to the prompt must be the empty string '', matching
+    the live _common_fields str() form."""
+    q = BacktestQuestion(
+        qid="metaculus:99", platform="metaculus", native_id="99",
+        qtype=QType.BINARY, title="Will Y happen?",
+        resolution_criteria="Resolves YES.", fine_print="",
+        open_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        scheduled_close_time=None)  # ← None
+
+    llm = StubLLM()
+    ctx = AsOfContext(as_of=AS_OF, llm=llm)
+    adapter = CalibratedEnsembleAdapter(_cfg(tmp_path))
+    art = await adapter.forecast(q, ctx)
+
+    assert art.error is None
+    # close_date slice of "" is "" — should appear in prompt as empty string
+    # (not the literal text "None")
+    assert "None" not in llm.calls[0]["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# Fix 3 — zero_point guard returns error artifact
+# ---------------------------------------------------------------------------
+
+async def test_numeric_zero_point_returns_error_artifact(
+        tmp_path, stub_research):
+    """Log-scaled questions (zero_point set) must return an error artifact
+    rather than silently building a linear-grid CDF."""
+    ctx = AsOfContext(as_of=AS_OF, llm=StubLLM(reply=NUMERIC_REPLY))
+    adapter = CalibratedEnsembleAdapter(_cfg(tmp_path))
+    art = await adapter.forecast(_numeric_q(zero_point=1.0), ctx)
+    assert art.forecast is None
+    assert art.error is not None
+    assert "log-scaled" in art.error.lower() or "zero_point" in art.error.lower()
+
+
+# ---------------------------------------------------------------------------
+# Fix 4 — byte-level prompt parity
+# ---------------------------------------------------------------------------
+
+async def test_prompt_byte_level_parity(tmp_path, stub_research):
+    """The prompt passed to the LLM must be byte-identical to what
+    BINARY_PROMPT.format() produces with the canonical _common_fields args."""
+    from bot.prompts import BINARY_PROMPT
+    from bot.ensemble_bot import _days_remaining
+
+    llm = StubLLM()
+    ctx = AsOfContext(as_of=AS_OF, llm=llm)
+    adapter = CalibratedEnsembleAdapter(_cfg(tmp_path))
+    q = _binary_q()
+    await adapter.forecast(q, ctx)
+
+    close_iso = str(q.scheduled_close_time or "")
+    expected = BINARY_PROMPT.format(
+        question_text=q.title,
+        background_info=q.description,
+        resolution_criteria=q.resolution_criteria,
+        fine_print=q.fine_print,
+        research="stub research",
+        today=AS_OF.date().isoformat(),
+        close_date=close_iso[:10],
+        days_remaining=_days_remaining(close_iso, now=AS_OF))
+
+    actual = llm.calls[0]["prompt"]
+    assert actual == expected, (
+        f"Prompt is not byte-identical.\n"
+        f"First diff at index {next(i for i,(a,b) in enumerate(zip(actual,expected)) if a!=b) if actual!=expected else 'lengths differ'}\n"
+        f"actual[:200]={actual[:200]!r}\n"
+        f"expected[:200]={expected[:200]!r}"
+    )
