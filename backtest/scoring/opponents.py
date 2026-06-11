@@ -10,18 +10,17 @@ single-price equivalent — anything but a scalar raises.
 """
 from __future__ import annotations
 
+import math
 from numbers import Real
 
 from backtest.core import Forecast, QType
-
-_PROB_FLOOR = 0.001
-_PROB_CEIL = 0.999
+from backtest.scoring.metaculus_scores import PROB_CEIL, PROB_FLOOR
 
 
 def _clamped_binary(p: float) -> Forecast:
     return Forecast(
         qtype=QType.BINARY,
-        binary_prob=min(max(float(p), _PROB_FLOOR), _PROB_CEIL),
+        binary_prob=min(max(float(p), PROB_FLOOR), PROB_CEIL),
     )
 
 
@@ -41,6 +40,8 @@ def cp_opponent(value) -> Forecast:
         return _clamped_binary(p)
     if isinstance(value, dict):
         probs = {str(k): float(v) for k, v in value.items()}
+        if any(v < 0 for v in probs.values()):
+            raise ValueError("MC probabilities must be non-negative")
         total = sum(probs.values())
         if not 0.99 <= total <= 1.01:
             raise ValueError(f"cp mc probabilities sum to {total}, expected ~1")
@@ -49,6 +50,8 @@ def cp_opponent(value) -> Forecast:
         cdf = tuple(float(v) for v in value)
         if len(cdf) < 2:
             raise ValueError("cp cdf needs at least 2 points")
+        if any(not math.isfinite(v) for v in cdf):
+            raise ValueError("cp cdf must contain only finite values")
         if cdf[0] < 0.0 or cdf[-1] > 1.0 or any(
             b < a for a, b in zip(cdf, cdf[1:])
         ):

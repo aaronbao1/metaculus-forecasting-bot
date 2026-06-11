@@ -78,6 +78,38 @@ def test_market_opponent_clamps_settled_prices():
     assert market_opponent(1.0).binary_prob == pytest.approx(0.999)
 
 
+# ---------------------------------------------------------------------------
+# Hardening tests (NaN CDF, negative MC probs, flat CDF acceptance)
+# ---------------------------------------------------------------------------
+
+def test_cp_opponent_rejects_nan_in_cdf():
+    """CDF containing NaN must raise — NaN comparisons silently pass ascending
+    check, poisoning downstream scores."""
+    with pytest.raises(ValueError, match="finite"):
+        cp_opponent([0.0, float("nan"), 1.0])
+
+
+def test_cp_opponent_rejects_inf_in_cdf():
+    """CDF containing inf must also be rejected by the finiteness guard."""
+    with pytest.raises(ValueError, match="finite"):
+        cp_opponent([0.0, float("inf"), 1.0])
+
+
+def test_cp_opponent_rejects_negative_mc_probability():
+    """MC dict with a negative value (e.g. {a: 1.2, b: -0.2}) sums to ~1 but
+    contains an illegal negative probability."""
+    with pytest.raises(ValueError, match="non-negative"):
+        cp_opponent({"a": 1.2, "b": -0.2})
+
+
+def test_cp_opponent_accepts_flat_cdf_plateau():
+    """A flat (plateau) CDF — e.g. [0.0, 0.4, 0.4, 1.0] — is non-decreasing
+    and must be ACCEPTED (locks the non-strict inequality semantics)."""
+    f = cp_opponent([0.0, 0.4, 0.4, 1.0])
+    assert f.qtype is QType.NUMERIC
+    assert f.cdf == (0.0, 0.4, 0.4, 1.0)
+
+
 def test_opponents_are_scoreable():
     q = BacktestQuestion(
         qid="polymarket:x", platform="polymarket", native_id="x",
