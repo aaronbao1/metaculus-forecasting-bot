@@ -193,7 +193,9 @@ class CorpusStore:
             dt_utc, iso_utc = _to_utc_iso(ts)
             normalized.append((iso_utc, value))
             sort_keys.append(dt_utc)
-        pts = [p for _, p in sorted(zip(sort_keys, normalized))]
+        pts = [normalized[i]
+               for i in sorted(range(len(normalized)),
+                                key=lambda i: sort_keys[i])]
 
         qid_hash = hashlib.sha1(qid.encode()).hexdigest()[:8]
         path = self.blobs / f"{_safe(qid)}__{qid_hash}__{_safe(kind)}.json"

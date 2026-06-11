@@ -238,6 +238,25 @@ def test_empty_series_value_at_returns_none(tmp_path):
     assert store.value_at("metaculus:31678", "cp", _utc(2026, 6, 1)) is None
 
 
+# ---------------------------------------------------------------------------
+# Regression: dict-valued series with duplicate timestamps must not raise
+# ---------------------------------------------------------------------------
+
+def test_put_series_dict_values_duplicate_timestamp(tmp_path):
+    """put_series with two dict-valued points sharing the same timestamp must
+    not raise TypeError.  value_at must return a dict (last-written wins or
+    either; we assert no exception and that the result is a dict)."""
+    store = CorpusStore(tmp_path)
+    ts = "2026-01-01T00:00:00+00:00"
+    from datetime import datetime, timezone
+    store.put_series("q:mc1", "cp", [
+        (ts, {"option_a": 0.6, "option_b": 0.4}),
+        (ts, {"option_a": 0.5, "option_b": 0.5}),
+    ])
+    result = store.value_at("q:mc1", "cp", datetime(2026, 6, 1, tzinfo=timezone.utc))
+    assert isinstance(result, dict), f"expected dict, got {result!r}"
+
+
 def test_query_stratum_requires_hash_and_joins(tmp_path):
     import pytest
     store = CorpusStore(tmp_path)
