@@ -20,7 +20,7 @@ FINE PRINT
 
 RESEARCH REPORT (from your assistant; weigh source quality yourself)
 {research}
-
+{playbook_section}
 Today's date: {today}
 Question closes: {close_date} ({days_remaining:.0f} days remaining)
 """

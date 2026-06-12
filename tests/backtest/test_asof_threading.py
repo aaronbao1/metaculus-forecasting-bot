@@ -71,7 +71,7 @@ async def test_binary_prompt_identical_with_as_of_none(monkeypatch, tmp_path):
         close_iso="2020-01-01T00:00:00Z")
     expected = BINARY_PROMPT.format(
         question_text="Q?", background_info="B", resolution_criteria="R",
-        fine_print="F", research="research text",
+        fine_print="F", research="research text", playbook_section="",
         today=date.today().isoformat(),
         close_date="2020-01-01", days_remaining=0.0)
     assert captured[0] == expected

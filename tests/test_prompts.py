@@ -7,7 +7,7 @@ COMMON = dict(
     question_text="Will X happen?", background_info="Some background.",
     resolution_criteria="Resolves YES if X.", fine_print="None.",
     research="Report.", today="2026-06-11", close_date="2026-07-01",
-    days_remaining=20.0,
+    days_remaining=20.0, playbook_section="",
 )
 
 

@@ -81,6 +81,30 @@ class CalibratedEnsembleBot:
         self._platt_binary = load_platt(
             Path(self.cfg.calibration_dir) / "binary.json")
 
+    def _template(self, qtype: str) -> str:
+        """Prompt template for a question type: cfg.prompt_overrides wins
+        (the optimization harness ships winners as config), else the module
+        constant. Overrides may use any subset of the standard placeholders —
+        str.format ignores unused kwargs."""
+        override = (self.cfg.prompt_overrides or {}).get(qtype)
+        if override:
+            return override
+        return {"binary": BINARY_PROMPT, "mc": MC_PROMPT,
+                "numeric": NUMERIC_PROMPT}[qtype]
+
+    def _playbook_section(self) -> str:
+        """Playbook block, or "" — in which case rendered prompts are
+        byte-identical to the pre-playbook templates (llm_cache safety)."""
+        if not self.cfg.playbook_path:
+            return ""
+        from bot.playbook import load_playbook
+        text = load_playbook(self.cfg.playbook_path)
+        if not text:
+            return ""
+        return ("\nFORECASTING PLAYBOOK (distilled lessons from past "
+                "resolved forecasts; apply only where relevant)\n"
+                f"{text}\n")
+
     async def _invoke_model(self, member_and_prompt) -> str:
         """Single seam for all LLM calls (monkeypatch target in tests)."""
         member, prompt = member_and_prompt
@@ -123,10 +147,10 @@ class CalibratedEnsembleBot:
     async def run_binary_ensemble(self, *, question_text, background_info,
                                   resolution_criteria, fine_print, research,
                                   close_iso) -> BinaryEnsembleResult:
-        prompt = BINARY_PROMPT.format(
+        prompt = self._template("binary").format(
             question_text=question_text, background_info=background_info,
             resolution_criteria=resolution_criteria, fine_print=fine_print,
-            research=research,
+            research=research, playbook_section=self._playbook_section(),
             today=(self.cfg.as_of.date() if self.cfg.as_of
                    else date.today()).isoformat(),
             close_date=str(close_iso)[:10],
@@ -147,10 +171,10 @@ class CalibratedEnsembleBot:
     async def run_mc_ensemble(self, *, question_text, background_info,
                               resolution_criteria, fine_print, research,
                               close_iso, options) -> MCEnsembleResult:
-        prompt = MC_PROMPT.format(
+        prompt = self._template("mc").format(
             question_text=question_text, background_info=background_info,
             resolution_criteria=resolution_criteria, fine_print=fine_print,
-            research=research,
+            research=research, playbook_section=self._playbook_section(),
             today=(self.cfg.as_of.date() if self.cfg.as_of
                    else date.today()).isoformat(),
             close_date=str(close_iso)[:10],
@@ -167,10 +191,10 @@ class CalibratedEnsembleBot:
                                    resolution_criteria, fine_print, research,
                                    close_iso, units, lower_bound_message,
                                    upper_bound_message) -> NumericEnsembleResult:
-        prompt = NUMERIC_PROMPT.format(
+        prompt = self._template("numeric").format(
             question_text=question_text, background_info=background_info,
             resolution_criteria=resolution_criteria, fine_print=fine_print,
-            research=research,
+            research=research, playbook_section=self._playbook_section(),
             today=(self.cfg.as_of.date() if self.cfg.as_of
                    else date.today()).isoformat(),
             close_date=str(close_iso)[:10],
