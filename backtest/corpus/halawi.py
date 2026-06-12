@@ -40,6 +40,21 @@ def _parse_dt(v) -> datetime | None:
     return datetime.fromisoformat(str(v))
 
 
+def _id_from_url(rec: dict) -> str | None:
+    """Trailing integer of the record's platform URL, when present.
+
+    The published curated split carries no id field, only e.g.
+    'https://www.metaculus.com/api2/questions/17316/' — the trailing
+    integer is the platform-native question id and beats a title hash
+    (stable across retitles; crosswalkable to live Metaculus copies).
+    """
+    url = str(rec.get("url") or "")
+    parts = [p for p in url.split("/") if p]
+    if parts and parts[-1].isdigit():
+        return parts[-1]
+    return None
+
+
 def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
@@ -79,6 +94,7 @@ def import_halawi(store: CorpusStore, dataset_dir) -> FetchReport:
         try:
             title = str(_first(rec, "question", "title", default=""))
             rid = str(_first(rec, "id", "question_id")
+                      or _id_from_url(rec)
                       or hashlib.sha256(title.encode()).hexdigest()[:12])
             resolution = _to_bool(_first(rec, "resolution", "answer"))
             if resolution is None:
@@ -107,7 +123,9 @@ def import_halawi(store: CorpusStore, dataset_dir) -> FetchReport:
                 provenance={
                     "source": "halawi",
                     "origin_platform": str(_first(
-                        rec, "source", "platform", default="unknown")),
+                        rec, "data_source", "source", "platform",
+                        default="unknown")),
+                    "url": str(rec.get("url") or ""),
                     "license_note": ("research dataset (arXiv 2402.18563);"
                                      " text stored verbatim"),
                     "imported_at":

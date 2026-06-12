@@ -85,3 +85,32 @@ def test_import_halawi_non_binary_numeric_resolution_is_skipped(tmp_path):
     assert report.fetched == 0
     assert len(report.errors) == 1
     assert "resolution" in report.errors[0].lower()
+
+
+def test_import_halawi_real_shape_url_id_and_data_source(tmp_path):
+    """Pin the actual published record shape (verified 2026-06-11):
+    no id field, platform id only in the url; platform under data_source."""
+    rec = {
+        "question": "Will X happen?",
+        "url": "https://www.metaculus.com/api2/questions/17316/",
+        "resolution": 0.0,
+        "is_resolved": True,
+        "data_source": "metaculus",
+        "question_type": "binary",
+        "background": "Context.",
+        "date_begin": "2023-06-01",
+        "date_close": "2023-09-30",
+        "date_resolve_at": "2023-10-01",
+        "resolution_criteria": "Criteria.",
+    }
+    d = tmp_path / "ds"
+    d.mkdir()
+    (d / "test.json").write_text(json.dumps([rec]))
+    store = CorpusStore(tmp_path / "store")
+    report = import_halawi(store, d)
+    assert report.fetched == 1, report.errors
+    q = store.get_question("halawi:17316")
+    assert q is not None
+    assert q.resolution is False
+    assert q.provenance["origin_platform"] == "metaculus"
+    assert q.provenance["url"].endswith("/17316/")
