@@ -34,10 +34,22 @@ def _default_ensemble() -> list[EnsembleMember]:
 class BotConfig:
     ensemble: list[EnsembleMember] = field(default_factory=_default_ensemble)
     aggregation_method: str = "trimmed_gmo"
+    n_trim: int = 1                   # forecasts dropped per side (trimmed_gmo)
+    # Fixed-α Karmarkar extremization between aggregation and calibration.
+    # 1.0 = identity. Pre-registered roadmap #1 arm; fitted extremization
+    # stays rejected — only fixed, pre-registered values belong here.
+    extremize_a: float = 1.0
     min_members: int = 3              # skip question if fewer members survive
     cap_lo: float = 0.02
     cap_hi: float = 0.98
     mc_floor: float = 0.01
+    # Per-qtype prompt template overrides ({"binary": "..."}). Empty = the
+    # constants in bot/prompts.py. The optimization harness ships winners
+    # through this field so candidate prompts are config, never code edits.
+    prompt_overrides: dict = field(default_factory=dict)
+    # Path to skills/forecasting-playbook.md. None = off; rendered prompts
+    # are byte-identical to the no-playbook era (cache-hit preservation).
+    playbook_path: str | None = None
     # Research: ALL providers run in parallel and compose into one report —
     # distinct-source count was the #1 Fall-2025 winner predictor (r=0.42).
     research_providers: tuple = ("asknews", "search_llm", "markets")

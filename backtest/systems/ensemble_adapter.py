@@ -29,7 +29,7 @@ from backtest.core import (BacktestQuestion, Forecast, ForecastArtifact,
 from backtest.corpus.model_releases import model_set_hash
 from backtest.timetravel.asof import ACTIVE_CONTEXT, AsOfContext
 from bot import research as bot_research
-from bot.aggregation import aggregate_binary
+from bot.aggregation import aggregate_binary, extremize
 from bot.calibration import calibrate_binary, load_platt
 from bot.config import BotConfig, config_hash
 from bot.distributions import percentiles_to_cdf
@@ -436,20 +436,25 @@ class CalibratedEnsembleAdapter:
             run_cfg = self._guard_calibration(run_cfg, stages)
             probs = [float(p) for p in member_outputs]
             started = _now_iso()
-            raw = aggregate_binary(probs, run_cfg.aggregation_method)
+            raw = aggregate_binary(probs, run_cfg.aggregation_method,
+                                   n_trim=run_cfg.n_trim)
             stages.append(StageRecord(
                 stage="aggregation",
                 inputs={"member_probs": probs,
-                        "method": run_cfg.aggregation_method},
+                        "method": run_cfg.aggregation_method,
+                        "n_trim": run_cfg.n_trim},
                 outputs={"aggregate_raw": raw},
                 started_at=started, ended_at=_now_iso()))
+            pre_cal = (extremize(raw, run_cfg.extremize_a)
+                       if run_cfg.extremize_a != 1.0 else raw)
             platt = load_platt(Path(run_cfg.calibration_dir) / "binary.json")
-            final = calibrate_binary(raw, platt,
+            final = calibrate_binary(pre_cal, platt,
                                      run_cfg.cap_lo, run_cfg.cap_hi)
             stages.append(StageRecord(
                 stage="calibration",
                 inputs={"aggregate_raw": raw, "cap_lo": run_cfg.cap_lo,
-                        "cap_hi": run_cfg.cap_hi},
+                        "cap_hi": run_cfg.cap_hi,
+                        "extremize_a": run_cfg.extremize_a},
                 outputs={"final": final}))
             return self._artifact(q, ctx,
                                   Forecast(qtype=QType.BINARY,

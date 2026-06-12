@@ -34,9 +34,10 @@ def mean_pool(probs) -> float:
 
 
 def trimmed_gmo(probs, n_trim: int = 1) -> float:
-    """Drop n_trim lowest and highest forecasts, then GMO; plain GMO if too few."""
+    """Drop n_trim lowest and highest forecasts, then GMO; plain GMO if too
+    few (or n_trim=0 — note p[0:-0] would slice to empty, hence the guard)."""
     p = np.sort(np.asarray(probs, dtype=float))
-    if len(p) > 2 * n_trim + 1:
+    if n_trim > 0 and len(p) > 2 * n_trim + 1:
         p = p[n_trim:-n_trim]
     return geometric_mean_of_odds(p)
 
@@ -52,7 +53,8 @@ def extremize(p: float, a: float) -> float:
     return float(num / (num + (1 - p) ** a))
 
 
-def aggregate_binary(probs, method: str = "trimmed_gmo") -> float:
+def aggregate_binary(probs, method: str = "trimmed_gmo",
+                     n_trim: int = 1) -> float:
     methods = {
         "trimmed_gmo": trimmed_gmo,
         "gmo": geometric_mean_of_odds,
@@ -64,6 +66,8 @@ def aggregate_binary(probs, method: str = "trimmed_gmo") -> float:
     probs = list(probs)
     if not probs:
         raise ValueError("no forecasts to aggregate")
+    if method == "trimmed_gmo":
+        return trimmed_gmo(probs, n_trim=n_trim)
     return methods[method](probs)
 
 

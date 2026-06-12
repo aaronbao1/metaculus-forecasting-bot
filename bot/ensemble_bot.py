@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from bot.aggregation import (aggregate_binary, aggregate_multiple_choice)
+from bot.aggregation import (aggregate_binary, aggregate_multiple_choice,
+                             extremize)
 from bot.calibration import calibrate_binary, load_platt
 from bot.config import BotConfig, DEFAULT_CONFIG, config_hash
 from bot.logging_store import append_forecast
@@ -132,9 +133,12 @@ class CalibratedEnsembleBot:
             days_remaining=_days_remaining(close_iso, now=self.cfg.as_of))
         texts, models = await self._fan_out(prompt)
         probs, kept = self._parse_survivors(texts, models, parse_binary)
-        raw = aggregate_binary(probs, self.cfg.aggregation_method)
+        raw = aggregate_binary(probs, self.cfg.aggregation_method,
+                               n_trim=self.cfg.n_trim)
         spread = max(probs) - min(probs)
-        final = calibrate_binary(raw, self._platt_binary,
+        pre_cal = (extremize(raw, self.cfg.extremize_a)
+                   if self.cfg.extremize_a != 1.0 else raw)
+        final = calibrate_binary(pre_cal, self._platt_binary,
                                  self.cfg.cap_lo, self.cfg.cap_hi)
         return BinaryEnsembleResult(final=final, aggregate_raw=raw,
                                     member_probs=probs, member_models=kept,
