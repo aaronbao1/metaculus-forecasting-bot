@@ -2,6 +2,7 @@
 a stub system. No network; CachedLLM is constructed but never invoked."""
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -215,3 +216,128 @@ async def test_probe_contaminated_confirmed_in_score_row(
     assert len(rows) == 1
     row = rows[0]
     assert row["stratum"] == "contaminated-confirmed"
+
+
+# ---------------------------------------------------------------------------
+# Addendum: regression locks from adversarial review
+# ---------------------------------------------------------------------------
+
+async def test_asymmetric_error_pairing(tmp_path, store, monkeypatch):
+    """stats.json n should equal the common-cell count (the variant that errors
+    on question 2 should not be counted for that cell in the paired comparison).
+    """
+    from backtest.core import StageRecord
+
+    class ErrorOnQ2(StubSystem):
+        name = "erroring"
+
+        async def forecast(self, q, ctx):
+            if q.qid == "metaculus:2":
+                raise RuntimeError("deliberate error on q2")
+            return await super().forecast(q, ctx)
+
+    stub_a = StubSystem()
+    stub_a.name = "variant_a"
+    stub_b = ErrorOnQ2()
+    stub_b.name = "variant_b"
+
+    monkeypatch.setattr(runner_mod, "_build_systems",
+                        lambda spec, store: {"variant_a": stub_a,
+                                             "variant_b": stub_b})
+    monkeypatch.setattr(runner_mod, "market_for", lambda store, qid: None)
+
+    # 2 variants, 2 questions, 1 horizon → variant_b errors on q2 → only q1 common
+    spec = _spec(variants=[{"name": "variant_a", "patch": {}},
+                            {"name": "variant_b", "patch": {}}],
+                 baselines=[])
+    result = await run_experiment(spec, store, tmp_path / "runs",
+                                  live_llm=False, yes=True)
+
+    stats = json.loads((result.run_dir / "stats.json").read_text())
+    # Only one pairing key exists
+    assert len(stats) == 1
+    pair_key = next(iter(stats))
+    # common-cell count must be 1 (only q1 succeeded for both variants)
+    assert stats[pair_key]["n"] == 1
+
+
+async def test_resume_no_duplication(tmp_path, store, monkeypatch):
+    """An interrupted-then-resumed run must not produce duplicate score rows."""
+    call_count = 0
+    original_forecast = StubSystem.forecast
+
+    async def interruptable_forecast(self, q, ctx):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            # Simulate crash after first artifact is written
+            raise RuntimeError("simulated mid-run crash")
+        return await original_forecast(self, q, ctx)
+
+    stub1 = StubSystem()
+    stub1.forecast = interruptable_forecast.__get__(stub1, StubSystem)
+    monkeypatch.setattr(runner_mod, "_build_systems",
+                        lambda spec, store: {"stub": stub1})
+    monkeypatch.setattr(runner_mod, "market_for", lambda store, qid: None)
+
+    # First run — crashes mid-way (second call raises)
+    result1 = await run_experiment(_spec(), store, tmp_path / "runs",
+                                   live_llm=False, yes=True)
+    # Exactly one question is "done", one is "error"
+    statuses1 = result1.statuses
+    assert "done" in statuses1.values()
+    assert "error" in statuses1.values()
+
+    # Resume — fresh stub, no crash
+    stub2 = StubSystem()
+    monkeypatch.setattr(runner_mod, "_build_systems",
+                        lambda spec, store: {"stub": stub2})
+    result2 = await run_experiment(_spec(), store, tmp_path / "runs",
+                                   live_llm=False, yes=True)
+    assert set(result2.statuses.values()) == {"done"}
+
+    # scores.jsonl must have exactly 2 rows (no duplicates)
+    rows = [json.loads(l) for l in
+            (result2.run_dir / "scores.jsonl").read_text().splitlines()]
+    assert len(rows) == 2
+    qids = [r["qid"] for r in rows]
+    assert len(qids) == len(set(qids)), "duplicate score rows detected"
+
+
+async def test_mid_run_actual_spend_brake(tmp_path, store, monkeypatch):
+    """After each forecast the runner accumulates actual cost; it must raise
+    RuntimeError when actual spend crosses cost_cap_usd, and the manifest
+    must remain loadable and resumable after the raise.
+    """
+    from backtest.core import StageRecord
+
+    EXPENSIVE = 10.0  # cost per forecast cell
+
+    class ExpensiveSystem(StubSystem):
+        async def forecast(self, q, ctx):
+            art = await super().forecast(q, ctx)
+            art.stages.append(StageRecord(stage="llm", cost_usd=EXPENSIVE))
+            return art
+
+    monkeypatch.setattr(runner_mod, "_build_systems",
+                        lambda spec, store: {"stub": ExpensiveSystem()})
+    monkeypatch.setattr(runner_mod, "market_for", lambda store, qid: None)
+    # cap lower than cost of 2 cells so the brake fires on the second cell
+    monkeypatch.setitem(PROFILES, "smoke",
+                        Profile(max_questions=2, cost_cap_usd=15.0,
+                                est_cost_per_question_usd=0.02))
+
+    run_dir_parent = tmp_path / "runs"
+    with pytest.raises(RuntimeError, match="cost brake.*actual"):
+        await run_experiment(_spec(), store, run_dir_parent,
+                             live_llm=False, yes=True)
+
+    # Manifest must still be valid JSON and contain at least one "done" cell
+    import glob
+    manifests = list(Path(run_dir_parent).glob("*/manifest.json"))
+    assert manifests, "no manifest written before brake fired"
+    manifest = json.loads(manifests[0].read_text())
+    assert "statuses" in manifest
+    assert "done" in manifest["statuses"].values()
+    # actual_cost_usd must be present in the manifest
+    assert "actual_cost_usd" in manifest

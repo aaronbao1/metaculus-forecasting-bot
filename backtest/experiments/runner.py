@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -40,6 +42,7 @@ class RunResult:
     run_dir: Path
     statuses: dict = field(default_factory=dict)
     projected_cost_usd: float = 0.0
+    actual_cost_usd: float = 0.0
 
 
 _BASELINE_FACTORIES = {
@@ -103,7 +106,21 @@ def _select_questions(spec: ExperimentSpec, store, profile) -> list:
 
 
 def _write_manifest(path: Path, manifest: dict) -> None:
-    path.write_text(json.dumps(manifest, indent=2))
+    """Atomic manifest write: write to a temp file in the same directory,
+    then os.replace() so readers always see a complete JSON document."""
+    data = json.dumps(manifest, indent=2)
+    dir_ = path.parent
+    fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 async def run_experiment(spec: ExperimentSpec, store, out_dir: Path, *,
@@ -121,8 +138,24 @@ async def run_experiment(spec: ExperimentSpec, store, out_dir: Path, *,
 
     # Cost estimate + hard brake + human gate (baselines spend nothing,
     # so only spec.variants count).
-    projected = (len(questions) * len(spec.horizons) * len(spec.variants)
-                 * profile.est_cost_per_question_usd)
+    # Resume-aware: load the manifest first so we can exclude cells that are
+    # already done/skipped from the projection.
+    manifest_path = run_dir / "manifest.json"
+    if manifest_path.exists():
+        _existing = json.loads(manifest_path.read_text())
+        _existing_statuses = _existing.get("statuses", {})
+    else:
+        _existing_statuses = {}
+
+    remaining_cells = sum(
+        1
+        for q in questions
+        for horizon in spec.horizons
+        for v in spec.variants
+        if _existing_statuses.get(f"{q.qid}|{horizon}|{v['name']}")
+        not in ("done", "skipped")
+    )
+    projected = remaining_cells * profile.est_cost_per_question_usd
     print(f"[retrocast] run {run_id}: {len(questions)} questions x "
           f"{len(spec.horizons)} horizons x {len(spec.variants)} LLM "
           f"variants (+{len(spec.baselines)} free baselines) "
@@ -138,14 +171,17 @@ async def run_experiment(spec: ExperimentSpec, store, out_dir: Path, *,
             return RunResult(run_id=run_id, run_dir=run_dir, statuses={},
                              projected_cost_usd=projected)
 
-    manifest_path = run_dir / "manifest.json"
+    # Load or initialise the manifest (manifest_path was defined above in the
+    # pre-flight block, so it's already set correctly).
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
     else:
         manifest = {"run_id": run_id, "spec_name": spec.name,
                     "corpus_root": str(getattr(store, "root", "")),
-                    "statuses": {}}
+                    "statuses": {}, "actual_cost_usd": 0.0}
     statuses: dict = manifest["statuses"]
+    # Carry forward any spend already accumulated in a previous (partial) run.
+    actual_cost_usd: float = float(manifest.get("actual_cost_usd", 0.0))
 
     # Cache lives at out_dir level, shared across run_ids: keys are
     # content-addressed (model/prompt/temperature/run_index), so sharing is
@@ -199,7 +235,19 @@ async def run_experiment(spec: ExperimentSpec, store, out_dir: Path, *,
                     f.write(json.dumps(artifact_to_dict(artifact)) + "\n")
                 statuses[key] = ("done" if artifact.error is None
                                  else "error")
+
+                # Accumulate actual spend and persist it before the brake check
+                # so the manifest is always valid (i.e. resumable) even if we raise.
+                cell_cost = sum(s.cost_usd for s in artifact.stages)
+                actual_cost_usd += cell_cost
+                manifest["actual_cost_usd"] = actual_cost_usd
                 _write_manifest(manifest_path, manifest)
+
+                if actual_cost_usd > profile.cost_cap_usd:
+                    raise RuntimeError(
+                        f"cost brake (actual spend): ${actual_cost_usd:.4f} "
+                        f"exceeds '{spec.profile}' cap "
+                        f"${profile.cost_cap_usd:.2f}")
 
     # After the probe may have upgraded strata, compute the model_set_hash so
     # _score_run can refresh stratum from the store (probe-confirmed strata
@@ -213,7 +261,8 @@ async def run_experiment(spec: ExperimentSpec, store, out_dir: Path, *,
 
     _score_run(run_dir, store, seed=spec.seed, model_set_hash=msh_for_scoring)
     return RunResult(run_id=run_id, run_dir=run_dir,
-                     statuses=dict(statuses), projected_cost_usd=projected)
+                     statuses=dict(statuses), projected_cost_usd=projected,
+                     actual_cost_usd=actual_cost_usd)
 
 
 def _score_run(run_dir: Path, store, seed: int = 0,
@@ -260,8 +309,9 @@ def _score_run(run_dir: Path, store, seed: int = 0,
             continue
         try:
             row["brier"] = brier(a.forecast, q)
-        except NotImplementedError:
-            pass
+        except Exception as e:
+            logger.warning("brier failed for %s/%s/%s: %s",
+                           qid, horizon, variant, e)
         try:
             cp = store.value_at(qid, "cp", a.as_of)
             if cp is not None:
