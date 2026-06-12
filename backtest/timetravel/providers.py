@@ -102,10 +102,25 @@ async def _asknews_historical_research(question: dict, cfg) -> str:
                       scopes={"news"})
     else:
         sdk = sdk_cls(api_key=os.getenv("ASKNEWS_API_KEY"), scopes={"news"})
+    # historical=True silently returns ZERO articles unless BOTH
+    # start_timestamp and end_timestamp are set (live-verified 2026-06-11).
+    # Window start: question open time (Halawi protocol) when the caller
+    # provides it, else 90 days before T.
+    end_ts = int(ctx.as_of.timestamp())
+    open_iso = question.get("open_time_iso")
+    if open_iso:
+        start_dt = datetime.fromisoformat(
+            str(open_iso).replace("Z", "+00:00"))
+        if start_dt.tzinfo is None:
+            from datetime import timezone as _tz
+            start_dt = start_dt.replace(tzinfo=_tz.utc)
+        start_ts = min(int(start_dt.timestamp()), end_ts - 3600)
+    else:
+        start_ts = end_ts - 90 * 86400
     resp = await sdk.news.search_news(
         query=question["question_text"], n_articles=ASKNEWS_N_ARTICLES,
         return_type="dicts", historical=True,
-        end_timestamp=int(ctx.as_of.timestamp()))
+        start_timestamp=start_ts, end_timestamp=end_ts)
     articles = getattr(resp, "as_dicts", None) or []
     parts = []
     for a in articles:

@@ -105,7 +105,10 @@ def _question_dict(q: BacktestQuestion) -> dict:
                 resolution_criteria=q.resolution_criteria or q.description,
                 fine_print=q.fine_print,
                 description=q.description,
-                qid=q.qid)
+                qid=q.qid,
+                # Halawi-style research window start (providers may use it):
+                open_time_iso=(q.open_time.isoformat()
+                               if q.open_time else None))
 
 
 def _common_fields(q: BacktestQuestion) -> dict:

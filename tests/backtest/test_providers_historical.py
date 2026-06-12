@@ -132,6 +132,9 @@ async def test_asknews_historical_end_timestamp_and_snapshot_ledger(
     sk = FakeAskNewsSDK.last.search_kwargs
     assert sk["historical"] is True
     assert sk["end_timestamp"] == int(T.timestamp())
+    # historical=True returns nothing without BOTH bounds (live-verified)
+    assert sk["start_timestamp"] == sk["end_timestamp"] - 90 * 86400
+    assert sk["historical"] is True
     assert sk["query"] == "Q?"
     assert "Title A" in out and "Sum A" in out and "Title B" in out
     assert len(ctx.ledger) == 2
@@ -150,3 +153,28 @@ async def test_asknews_oauth_credentials_pass_through(ctx, monkeypatch):
     await providers._asknews_historical_research(QUESTION, CFG)
     assert FakeAskNewsSDK.last.kwargs["client_id"] == "cid"
     assert FakeAskNewsSDK.last.kwargs["client_secret"] == "sec"
+
+
+async def test_asknews_start_timestamp_uses_open_time_when_given(
+        monkeypatch, ctx):
+    captured = {}
+
+    class FakeNews:
+        async def search_news(self, **kw):
+            captured.update(kw)
+            class R:
+                as_dicts = []
+            return R()
+
+    class FakeSDK:
+        def __init__(self, **kw): self.news = FakeNews()
+
+    monkeypatch.setenv("ASKNEWS_API_KEY", "k")
+    monkeypatch.delenv("ASKNEWS_CLIENT_ID", raising=False)
+    monkeypatch.setattr(providers, "_get_asknews_sdk", lambda: FakeSDK)
+    q = {"question_text": "x?", "resolution_criteria": "", "fine_print": "",
+         "qid": "probe:1", "open_time_iso": "2024-05-10T00:00:00+00:00"}
+    await providers._asknews_historical_research(q, BotConfig())
+    from datetime import datetime, timezone
+    assert captured["start_timestamp"] == int(
+        datetime(2024, 5, 10, tzinfo=timezone.utc).timestamp())
