@@ -31,12 +31,12 @@ class ResearchResult:
     providers: tuple = ()    # successful providers, in configured order
 
 
-def _prompt_args(question: dict) -> dict:
+def _prompt_args(question: dict, cfg: BotConfig) -> dict:
     return dict(
         question_text=question["question_text"],
         resolution_criteria=question.get("resolution_criteria", ""),
         fine_print=question.get("fine_print", ""),
-        today=date.today().isoformat(),
+        today=(cfg.as_of.date() if cfg.as_of else date.today()).isoformat(),
     )
 
 
@@ -54,7 +54,7 @@ async def _asknews_research(question: dict, cfg: BotConfig) -> str:
 async def _search_llm_research(question: dict, cfg: BotConfig) -> str:
     from forecasting_tools import GeneralLlm
     llm = GeneralLlm(model=f"openrouter/{cfg.search_model}", temperature=0.1)
-    args = _prompt_args(question)
+    args = _prompt_args(question, cfg)
     # return_exceptions so one track's failure neither discards the other
     # track's report nor orphans its still-running task
     current, historical = await asyncio.gather(

@@ -5,7 +5,11 @@ from datetime import datetime, timezone
 
 
 def days_until(close_time: datetime, now: datetime | None = None) -> float:
+    if close_time.tzinfo is None:
+        close_time = close_time.replace(tzinfo=timezone.utc)
     now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     return (close_time - now).total_seconds() / 86400.0
 
 

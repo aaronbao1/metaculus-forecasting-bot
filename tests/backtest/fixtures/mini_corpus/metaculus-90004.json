@@ -1,0 +1,25 @@
+{
+  "question": {
+    "qid": "metaculus:90004",
+    "platform": "metaculus",
+    "native_id": "90004",
+    "qtype": "multiple_choice",
+    "title": "How many named Delta-class storms will form before 2025-03-01?",
+    "description": "Synthetic fixture question for the CI smoke gate.",
+    "resolution_criteria": "Resolves to the bucket containing the official count.",
+    "fine_print": "Counts at the scheduled close time.",
+    "open_time": "2025-01-01T00:00:00+00:00",
+    "scheduled_close_time": "2025-03-01T00:00:00+00:00",
+    "spot_scoring_time": "2025-02-22T00:00:00+00:00",
+    "actual_resolve_time": "2025-03-02T00:00:00+00:00",
+    "resolution": "4-6",
+    "options": ["0-3", "4-6", "7 or more"],
+    "scaling": null,
+    "question_weight": 1.0,
+    "provenance": {"source": "fixture", "license": "synthetic", "fetched_at": "2026-06-11T00:00:00+00:00"}
+  },
+  "cp_series": [
+    ["2025-01-05T00:00:00+00:00", {"0-3": 0.20, "4-6": 0.50, "7 or more": 0.30}],
+    ["2025-02-20T00:00:00+00:00", {"0-3": 0.15, "4-6": 0.60, "7 or more": 0.25}]
+  ]
+}

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,11 @@ class BotConfig:
     max_questions_per_run: int = 50                # cost brake
     calibration_dir: str = "calibration"
     log_path: str = "logs/forecasts.jsonl"
+    # Backtesting (Retrocast): pretend "today" is this instant everywhere a
+    # date or day-count enters a prompt. None = live behavior, bit-identical
+    # to pre-backtest code. Excluded from config_hash so live hashes are
+    # unchanged and backtest variants fingerprint identically to live.
+    as_of: datetime | None = None
 
     @property
     def submit_predictions(self) -> bool:
@@ -53,7 +59,9 @@ class BotConfig:
 
 
 def config_hash(cfg: BotConfig) -> str:
-    blob = json.dumps(asdict(cfg), sort_keys=True, default=str)
+    d = asdict(cfg)
+    d.pop("as_of", None)     # backtest-only knob; must not perturb live hashes
+    blob = json.dumps(d, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
 

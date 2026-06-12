@@ -1,0 +1,27 @@
+{
+  "question": {
+    "qid": "metaculus:90005",
+    "platform": "metaculus",
+    "native_id": "90005",
+    "qtype": "numeric",
+    "title": "What will the Eastlake activity index be on 2025-03-01?",
+    "description": "Synthetic fixture question for the CI smoke gate.",
+    "resolution_criteria": "Resolves to the official index value at close.",
+    "fine_print": "Rounded to one decimal place.",
+    "open_time": "2025-01-01T00:00:00+00:00",
+    "scheduled_close_time": "2025-03-01T00:00:00+00:00",
+    "spot_scoring_time": "2025-02-22T00:00:00+00:00",
+    "actual_resolve_time": "2025-03-02T00:00:00+00:00",
+    "resolution": 42.0,
+    "options": [],
+    "scaling": {"range_min": 0, "range_max": 100, "zero_point": null,
+                "open_lower_bound": false, "open_upper_bound": false,
+                "cdf_size": 201, "unit": "index points"},
+    "question_weight": 1.0,
+    "provenance": {"source": "fixture", "license": "synthetic", "fetched_at": "2026-06-11T00:00:00+00:00"}
+  },
+  "cp_series": [
+    ["2025-01-15T00:00:00+00:00", 38.0],
+    ["2025-02-15T00:00:00+00:00", 41.5]
+  ]
+}
