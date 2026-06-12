@@ -137,6 +137,30 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_failures(args) -> int:
+    import asyncio
+
+    from backtest.corpus.store import CorpusStore
+    from backtest.reports import failures as failures_mod
+    from backtest.timetravel.llm_cache import CachedLLM
+    from bot.config import BotConfig
+    run_dir = Path(args.run_dir)
+    if not run_dir.exists():
+        print(f"run dir not found: {run_dir}")
+        return 2
+    store = CorpusStore(Path(args.corpus))
+    # cache lives at out_dir level (run_dir's parent), shared across run_ids;
+    # replay-only by default so taxonomy rendering is $0 — pass --live to
+    # allow fresh facet/cluster calls
+    llm = CachedLLM(run_dir.parent / "llm_cache", live=args.live)
+    payload = asyncio.run(failures_mod.analyze_failures(
+        run_dir, store, llm, args.model or BotConfig().parser_model,
+        top=args.top, variant=args.variant))
+    print(f"failures: {payload['n_failures']} losses -> "
+          f"{len(payload['clusters'])} clusters; wrote failures.json/.md")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         prog="backtest",
@@ -202,6 +226,20 @@ def main(argv=None) -> int:
                         help="render the markdown report for a run dir")
     rp.add_argument("run_dir")
     rp.set_defaults(func=cmd_report)
+
+    fl = sub.add_parser("failures",
+                        help="Clio-style failure taxonomy over a run's "
+                             "worst losses (failures.json + failures.md)")
+    fl.add_argument("run_dir")
+    fl.add_argument("--corpus", default="data/backtest")
+    fl.add_argument("--top", type=int, default=25)
+    fl.add_argument("--variant", default=None,
+                    help="restrict to one variant's losses")
+    fl.add_argument("--model", default=None,
+                    help="facet/cluster model (default: parser_model)")
+    fl.add_argument("--live", action="store_true",
+                    help="allow fresh LLM calls (default: replay-only)")
+    fl.set_defaults(func=cmd_failures)
 
     args = p.parse_args(argv)
     return args.func(args)
