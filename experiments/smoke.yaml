@@ -1,0 +1,15 @@
+# CI smoke gate experiment. Runs against the committed mini corpus
+# (tests/backtest/fixtures/mini_corpus) with the deterministic StubSystem
+# injected via `scripts/backtest.py run --system stub` — variants and
+# baselines below are therefore IGNORED in CI (the --system override
+# replaces the full system list). No network, no LLM spend.
+name: ci-smoke
+corpus:
+  platforms: [metaculus]
+  resolved_only: true
+horizons: [close-7d]
+cutoff_mode: strict
+profile: smoke
+variants: []
+baselines: []
+seed: 0
