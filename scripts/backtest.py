@@ -18,9 +18,14 @@ from pathlib import Path as _Path
 _repo_root = str(_Path(__file__).resolve().parent.parent)
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
-del _Path, _repo_root
+del _repo_root
 import json
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(_Path(__file__).resolve().parent.parent / ".env")
+del _Path
 
 
 def cmd_build_corpus(args) -> int:

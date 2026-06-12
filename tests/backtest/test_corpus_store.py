@@ -271,3 +271,57 @@ def test_query_stratum_requires_hash_and_joins(tmp_path):
     assert [q.qid for q in store.query(stratum="contaminated",
                                        model_set_hash="abc123")] == \
         ["polymarket:a"]
+
+
+# ---------------------------------------------------------------------------
+# B1 — _from_iso: naive ISO string must yield aware UTC datetime
+# ---------------------------------------------------------------------------
+
+def test_from_iso_naive_string_returns_aware_utc():
+    """_from_iso on a naive ISO string (no tz) must return an aware UTC datetime,
+    not a naive datetime — store convention: naive = UTC."""
+    from backtest.corpus.store import _from_iso
+    result = _from_iso("2024-06-15T12:00:00")
+    assert result is not None
+    assert result.tzinfo is not None, "naive ISO string must yield aware datetime"
+    assert result.utcoffset().total_seconds() == 0, "must be UTC"
+    # value must be preserved
+    assert result.year == 2024
+    assert result.month == 6
+    assert result.day == 15
+    assert result.hour == 12
+
+
+def test_from_iso_aware_string_preserved():
+    """_from_iso on an already-aware ISO string must return it unchanged (tz kept)."""
+    from backtest.corpus.store import _from_iso
+    result = _from_iso("2024-06-15T12:00:00+00:00")
+    assert result is not None
+    assert result.tzinfo is not None
+    assert result.hour == 12
+
+
+def test_from_iso_none_returns_none():
+    from backtest.corpus.store import _from_iso
+    assert _from_iso(None) is None
+    assert _from_iso("") is None
+
+
+def test_store_round_trip_naive_iso_yields_aware():
+    """Storing a question whose datetimes were serialised as naive ISO strings
+    (old corpus data) must deserialise as aware UTC datetimes, not naive ones."""
+    import sqlite3
+    store = CorpusStore(tmp_path := __import__("tempfile").mkdtemp())
+    from pathlib import Path
+    store = CorpusStore(Path(tmp_path))
+    q = _numeric_question()
+    store.upsert_question(q)
+    # Patch the DB row to write a naive ISO string (simulates old corpus data)
+    store.conn.execute(
+        "UPDATE questions SET open_time = ? WHERE qid = ?",
+        ("2026-01-01T00:00:00", q.qid))  # naive — no tz suffix
+    store.conn.commit()
+    got = store.get_question(q.qid)
+    assert got.open_time is not None
+    assert got.open_time.tzinfo is not None, (
+        "round-trip of naive ISO string must yield aware UTC datetime")

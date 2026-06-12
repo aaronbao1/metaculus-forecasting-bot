@@ -80,7 +80,11 @@ def _iso(dt: datetime | None) -> str | None:
 
 
 def _from_iso(s: str | None) -> datetime | None:
-    return datetime.fromisoformat(s) if s else None
+    if not s:
+        return None
+    dt = datetime.fromisoformat(s)
+    # Store convention: naive ISO strings are always UTC (old corpus rows).
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
 def _safe(qid: str) -> str:

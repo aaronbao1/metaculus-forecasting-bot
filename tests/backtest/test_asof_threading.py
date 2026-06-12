@@ -137,3 +137,51 @@ def test_days_remaining_naive_close_iso_with_aware_now():
     naive_close_iso = "2024-06-25T12:00:00"             # no Z / +00:00
     result = _days_remaining(naive_close_iso, now=aware_now)
     assert result == pytest.approx(10.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# B1 — horizon_to_asof with naive open + aware close must not raise TypeError
+# ---------------------------------------------------------------------------
+
+def test_horizon_to_asof_naive_open_aware_close_no_crash():
+    """62 corpus questions have naive open_time + aware scheduled_close_time.
+    horizon_to_asof must normalise naive datetimes to UTC before arithmetic
+    instead of crashing with TypeError."""
+    from backtest.core import BacktestQuestion, QType
+    from backtest.timetravel.asof import horizon_to_asof
+
+    q = BacktestQuestion(
+        qid="test:1", platform="test", native_id="1",
+        qtype=QType.BINARY, title="T?",
+        open_time=datetime(2024, 1, 1, 0, 0),                 # naive
+        scheduled_close_time=datetime(2024, 7, 1, tzinfo=timezone.utc),  # aware
+    )
+
+    # All geo-k and close-Nd horizons must not raise
+    for h in ["geo-1", "geo-2", "geo-3", "geo-4", "geo-5",
+              "close-7d", "close-30d", "close-365d"]:
+        result = horizon_to_asof(q, h)
+        # When a value is returned (not None) it must be tz-aware
+        if result is not None:
+            assert result.tzinfo is not None, (
+                f"horizon_to_asof({h!r}) returned naive datetime: {result!r}")
+
+
+def test_horizon_to_asof_geo_naive_open_returns_aware_datetime():
+    """geo-1 with naive open + aware close returns a tz-aware datetime (not None,
+    not naive) — specifically it is the expected T_1 value."""
+    from backtest.core import BacktestQuestion, QType
+    from backtest.timetravel.asof import horizon_to_asof
+
+    # span = 181 days (Jan 1 → Jul 1, 2024, leap year)
+    open_dt = datetime(2024, 1, 1, 0, 0)          # naive
+    close_dt = datetime(2024, 7, 1, tzinfo=timezone.utc)  # aware
+    q = BacktestQuestion(
+        qid="test:2", platform="test", native_id="2",
+        qtype=QType.BINARY, title="T?",
+        open_time=open_dt, scheduled_close_time=close_dt,
+    )
+
+    result = horizon_to_asof(q, "geo-1")
+    assert result is not None
+    assert result.tzinfo is not None, "returned datetime must be tz-aware"

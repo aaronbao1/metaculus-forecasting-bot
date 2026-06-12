@@ -278,6 +278,10 @@ class CalibratedEnsembleAdapter:
                 inputs={"providers": list(run_cfg.research_providers)},
                 outputs={"text": res.text, "provider": res.provider},
                 started_at=started, ended_at=_now_iso()))
+            if res.provider == "none":
+                raise RuntimeError(
+                    "no research available; refusing LLM spend "
+                    "(all configured research providers returned nothing)")
             fc = await self._dispatch(bot, q, res.text, stages)
             return self._artifact(q, ctx, fc, stages)
         except Exception as e:
