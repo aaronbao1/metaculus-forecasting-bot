@@ -31,10 +31,12 @@ logs/backtest/       run outputs (artifacts, scores, reports)
 pip install -e ".[dev]"
 ```
 
-The harness reuses the live bot's `.env` keys (`OPENROUTER_API_KEY`,
-`ASKNEWS_*`, `EXA_API_KEY`). Optional backtest-only providers:
-`SERPER_API_KEY` (pragmatic mode), `NYT_API_KEY`, `GUARDIAN_API_KEY`
-(first-party archives). See `.env.template`.
+The harness reuses the live bot's `.env` keys. Required keys:
+`OPENROUTER_API_KEY`, `ASKNEWS_CLIENT_ID`, `ASKNEWS_CLIENT_SECRET`,
+`EXA_API_KEY`, `METACULUS_TOKEN`. Backtest-only: `SERPER_API_KEY`
+(required for pragmatic mode). NYT and Guardian first-party archive
+providers are spec'd but not yet implemented — see the deferred-items
+list in the implementation plan (`docs/superpowers/specs/`).
 
 ## Building a corpus
 

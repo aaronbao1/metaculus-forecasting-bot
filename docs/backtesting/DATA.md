@@ -88,7 +88,9 @@ Semantics worth pinning:
   `blobs/<safe-qid>__<sha1-8>__<kind>.json` — the full, sorted point list.
   `value_at(qid, kind, T)` is a step-function lookup: last point with
   `ts <= T`, else `None`. CP gap sentinels (stored as JSON `null`) are
-  preserved in the series and skipped by `value_at`.
+  preserved in the series; when the last point at or before T is a
+  sentinel, `value_at` returns `None` — that is the gap mechanism, not a
+  skip.
 
 - **UTC normalization on write.** `put_series` normalizes all timestamps to
   UTC ISO-8601 before writing, so mixed-offset inputs ("+02:00", "Z",

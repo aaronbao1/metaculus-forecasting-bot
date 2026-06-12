@@ -119,12 +119,13 @@ async def _<name>_research(question: dict, cfg: BotConfig) -> str
   (`backtest/timetravel/asof.py`) for `as_of`, the evidence ledger, and the
   corpus store. They MUST raise `RuntimeError` when no context is set, or
   when the context's `cutoff_mode` forbids their `cutoff_class`.
-- Each provider declares a `cutoff_class`: `strict` (time-locked by
+- Each provider belongs to a cutoff class — strict or pragmatic —
+  enforced inline via `ctx.cutoff_mode` checks. `strict` (time-locked by
   mechanism: AskNews historical, GDELT+Wayback, Exa `endCrawlDate`,
-  markets-at-T, NYT/Guardian archives) or `pragmatic` (date-filtered live
-  search — Serper/Tavily — screened per-doc by
-  `backtest/timetravel/leakage.py:screen_docs`, results stamped
-  `date_trust="low"`).
+  markets-at-T); `pragmatic` (date-filtered live search — serper_dated —
+  screened per-doc by `backtest/timetravel/leakage.py:screen_docs`,
+  results stamped `date_trust="low"`). NYT/Guardian archive providers
+  are spec'd but not yet implemented.
 - Required ledger writes: one `LedgerEntry` per surfaced document, including
   documents the leak-screen later discards (discards are stamped too).
 - The live Perplexity provider (`_search_llm_research`) has no historical
@@ -161,8 +162,9 @@ Calibration (Platt scaling) applies to binary forecasts when
 `allow_calibration=True` is passed at construction. The default is
 `allow_calibration=False`, which acts as a sentinel guard: if a fitted
 `binary.json` exists in `calibration_dir` and `allow_calibration=False`,
-the adapter redirects `calibration_dir` to a temp location (no calibration
-applied) and logs a warning. This prevents silent calibration application
+the adapter redirects `calibration_dir` to a nonexistent sentinel path
+(`<calibration_dir>.disabled-for-backtest`, no calibration applied) and
+logs a warning. This prevents silent calibration application
 in backtests where the Platt map was fitted on future data relative to T.
 
 To deliberately use a calibration map in a backtest variant (e.g., to
