@@ -341,3 +341,20 @@ async def test_mid_run_actual_spend_brake(tmp_path, store, monkeypatch):
     assert "done" in manifest["statuses"].values()
     # actual_cost_usd must be present in the manifest
     assert "actual_cost_usd" in manifest
+
+
+def test_corpus_limit_caps_below_profile(tmp_path):
+    """spec corpus 'limit' tightens the profile's max_questions cap."""
+    from backtest.experiments.runner import _select_questions
+    from backtest.experiments.profiles import PROFILES
+    from backtest.experiments.spec import ExperimentSpec
+
+    store = CorpusStore(tmp_path / "store")
+    for i in range(5):
+        store.upsert_question(_q(i, resolution=True))
+    spec = ExperimentSpec(name="cap", corpus={"limit": 2},
+                          horizons=["close-7d"], cutoff_mode="strict",
+                          profile="standard", variants=[], baselines=[],
+                          seed=0)
+    qs = _select_questions(spec, store, PROFILES["standard"])
+    assert len(qs) == 2

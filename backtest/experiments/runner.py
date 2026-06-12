@@ -89,8 +89,11 @@ def _run_id(spec: ExperimentSpec, systems: dict) -> str:
 
 def _select_questions(spec: ExperimentSpec, store, profile) -> list:
     corpus = dict(spec.corpus)
+    # corpus "limit" lets a spec cap spend below the profile ceiling;
+    # the tighter of the two wins.
+    caps = [c for c in (profile.max_questions, corpus.get("limit")) if c]
     kwargs = {"resolved_only": corpus.get("resolved_only", True),
-              "limit": profile.max_questions}
+              "limit": min(caps) if caps else None}
     for key in ("platforms", "qtypes", "open_after", "close_before",
                 "stratum", "model_set_hash"):
         if key in corpus:
