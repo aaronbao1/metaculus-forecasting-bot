@@ -4,14 +4,16 @@ clean iff question.open_time > max RELEASE DATE across the ensemble's
 models. Release date, NOT stated training cutoff: cutoff labels
 demonstrably lie; release dates are the trustworthy bound.
 
-!!! PLACEHOLDER DATES — IMPLEMENTER MUST VERIFY BEFORE USE !!!
-The dates below are set to 2026-06-11 (the design date) as the MAXIMALLY
-CONSERVATIVE placeholder: with these values NOTHING in the corpus can be
-labeled "clean", so a forgotten verification fails safe (no false clean
-stratum) rather than silently contaminating the headline metric. Before the
-first real stratified report, replace each with the model's verified public
-release date (OpenRouter model page / provider announcement) and re-run
-stratify over the corpus. The slugs mirror bot/config.py:_default_ensemble().
+Dates VERIFIED 2026-06-11 against provider announcements, cross-checked
+with the OpenRouter models API `created` timestamps (which anchor when the
+slug became callable by this bot). Where the two differed, the LATER date
+was chosen (conservative: fewer questions labeled "clean").
+
+ANY NEW ENSEMBLE MEMBER needs the same verification before its first
+stratified report; unknown slugs fail safe (hash as "unknown" and the
+"u" > digit string-compare makes every question "contaminated").
+The slugs mirror bot/config.py:_default_ensemble(). Note OpenRouter
+aliases the configured "claude-opus-4-6" to canonical "claude-opus-4.6".
 """
 from __future__ import annotations
 
@@ -21,10 +23,16 @@ from backtest.core import BacktestQuestion
 from backtest.corpus.store import CorpusStore
 
 RELEASE_DATES: dict[str, str] = {
-    # OpenRouter slug -> iso release date. PLACEHOLDERS — see module docstring.
-    "openai/gpt-5.4": "2026-06-11",
-    "anthropic/claude-opus-4-6": "2026-06-11",
-    "google/gemini-3.1-pro-preview": "2026-06-11",
+    # OpenRouter slug -> iso public release date. Verified 2026-06-11:
+    # GPT-5.4: openai.com/index/introducing-gpt-5-4 (TechCrunch 2026-03-05);
+    # OpenRouter created 2026-03-05 — agrees.
+    "openai/gpt-5.4": "2026-03-05",
+    # Claude Opus 4.6: anthropic.com/news/claude-opus-4-6 (TechCrunch
+    # 2026-02-05); OpenRouter created 2026-02-04 — later date kept.
+    "anthropic/claude-opus-4-6": "2026-02-05",
+    # Gemini 3.1 Pro preview: blog.google .../gemini-3-1-pro (9to5Google
+    # 2026-02-19); OpenRouter created 2026-02-19 — agrees.
+    "google/gemini-3.1-pro-preview": "2026-02-19",
 }
 
 
