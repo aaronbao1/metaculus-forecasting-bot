@@ -74,6 +74,23 @@ def test_max_new_honored(tmp_path):
                                        max_new=3)) == 3
 
 
+def test_cli_replay_mode_cache_miss_is_friendly(tmp_path, capsys):
+    import json as _json
+
+    from scripts.playbook_update import main
+    run_dir = tmp_path / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    failures = run_dir / "failures.json"
+    failures.write_text(_json.dumps(FAILURES))
+    pb = tmp_path / "pb.md"
+    pb.write_text(PLAYBOOK)
+    rc = main([str(failures), "--playbook", str(pb)])   # replay-only default
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "--live" in out                              # actionable hint
+    assert pb.read_text() == PLAYBOOK                   # untouched
+
+
 def test_garbage_reflection_adds_nothing(tmp_path):
     pb = tmp_path / "pb.md"
     pb.write_text(PLAYBOOK)

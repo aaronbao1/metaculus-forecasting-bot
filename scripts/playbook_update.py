@@ -148,8 +148,15 @@ def main(argv=None) -> int:
     async def invoke(prompt, sample_idx):
         return await llm.invoke(model, prompt, 0.2, run_index=sample_idx)
 
-    added = asyncio.run(update_playbook(
-        failures, args.playbook, invoke, max_new=args.max_new))
+    from backtest.timetravel.llm_cache import CacheMiss
+    try:
+        added = asyncio.run(update_playbook(
+            failures, args.playbook, invoke, max_new=args.max_new))
+    except CacheMiss:
+        print("playbook: reflection call is not cached and this is "
+              "replay-only mode — pass --live to allow one fresh LLM call "
+              "(~a cent with the parser model)")
+        return 1
     print(f"playbook: added {added} candidate bullet(s) to {args.playbook} "
           "(promotion stays manual + experiments-gated)")
     return 0
