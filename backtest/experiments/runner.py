@@ -78,6 +78,13 @@ def _build_systems(spec: ExperimentSpec, store) -> dict:
             raise ValueError(f"unknown baseline: {b!r} "
                              f"(choose from {sorted(_BASELINE_FACTORIES)})")
         systems[b] = factory(store)
+    from backtest.systems.registry import build_extra_systems
+    extra = build_extra_systems(spec, store)
+    collisions = set(extra) & set(systems)
+    if collisions:
+        raise ValueError(f"system names collide with variants/baselines: "
+                         f"{sorted(collisions)}")
+    systems.update(extra)
     return systems
 
 
