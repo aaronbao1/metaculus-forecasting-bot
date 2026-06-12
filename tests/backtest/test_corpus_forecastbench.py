@@ -80,3 +80,28 @@ def test_import_forecastbench_dedupes_across_nightly_sets(tmp_path):
     store = CorpusStore(tmp_path / "corpus")
     report = import_forecastbench(store, root)
     assert report.fetched == 2            # unique qids, not rows
+
+
+def test_na_string_dates_import_instead_of_erroring(tmp_path):
+    """Real dataset-source questions carry literal "N/A" market dates
+    (verified vs forecastbench-datasets 2026-06-11) — must import, not error."""
+    qdir = tmp_path / "datasets" / "question_sets"
+    qdir.mkdir(parents=True)
+    (qdir / "2024-07-21-human.json").write_text(json.dumps({
+        "questions": [{
+            "id": "deadbeef01",
+            "source": "acled",
+            "question": "Will fatalities exceed the reference value?",
+            "resolution_criteria": "Per ACLED data.",
+            "market_info_open_datetime": "N/A",
+            "market_info_close_datetime": "N/A",
+            "freeze_datetime": "2024-07-12T00:00:00+00:00",
+            "freeze_datetime_value": "1.0",
+            "combination_of": "N/A",
+        }]}))
+    store = CorpusStore(tmp_path / "store")
+    report = import_forecastbench(store, tmp_path)
+    assert report.errors == []
+    assert report.fetched == 1
+    q = store.get_question("forecastbench:acled:deadbeef01")
+    assert q is not None and q.scheduled_close_time is None

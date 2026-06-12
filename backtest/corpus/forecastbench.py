@@ -25,7 +25,10 @@ from backtest.corpus.store import CorpusStore, FetchReport
 
 
 def _parse_dt(v) -> datetime | None:
-    if v in (None, ""):
+    # Dataset-source questions (acled/fred/wikipedia/...) carry the literal
+    # string "N/A" in market date fields — verified against the real repo
+    # 2026-06-11 (8,596/11,412 records would otherwise error out).
+    if v in (None, "", "N/A"):
         return None
     return datetime.fromisoformat(str(v))
 
