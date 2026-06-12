@@ -89,11 +89,10 @@ def _run_id(spec: ExperimentSpec, systems: dict) -> str:
 
 def _select_questions(spec: ExperimentSpec, store, profile) -> list:
     corpus = dict(spec.corpus)
-    # corpus "limit" lets a spec cap spend below the profile ceiling;
-    # the tighter of the two wins.
-    caps = [c for c in (profile.max_questions, corpus.get("limit")) if c]
+    # Query ALL matching questions (no SQL LIMIT) so the later seeded shuffle
+    # draws uniformly across all platforms, not just alphabetically-first qids.
     kwargs = {"resolved_only": corpus.get("resolved_only", True),
-              "limit": min(caps) if caps else None}
+              "limit": None}
     for key in ("platforms", "qtypes", "open_after", "close_before",
                 "stratum", "model_set_hash"):
         if key in corpus:
@@ -105,7 +104,26 @@ def _select_questions(spec: ExperimentSpec, store, profile) -> list:
         from backtest.corpus.model_releases import model_set_hash
         kwargs["model_set_hash"] = model_set_hash(
             [m.model for m in BotConfig().ensemble])
-    return sorted(store.query(**kwargs), key=lambda q: q.qid)
+    qs = store.query(**kwargs)
+
+    # Filter to horizon-feasible questions only (at least one horizon in
+    # spec.horizons must map to a valid as-of datetime) so wasted "skipped"
+    # cells don't consume the cap.
+    qs = [q for q in qs
+          if any(horizon_to_asof(q, h) is not None for h in spec.horizons)]
+
+    # Deterministic seeded shuffle: same seed+corpus → same selection order.
+    import random
+    random.Random(spec.seed).shuffle(qs)
+
+    # Truncate to the tighter of profile.max_questions / corpus["limit"].
+    caps = [c for c in (profile.max_questions, corpus.get("limit")) if c]
+    cap = min(caps) if caps else None
+    if cap is not None:
+        qs = qs[:cap]
+
+    # Stable iteration order within the selected set.
+    return sorted(qs, key=lambda q: q.qid)
 
 
 def _write_manifest(path: Path, manifest: dict) -> None:

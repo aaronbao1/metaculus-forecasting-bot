@@ -122,10 +122,12 @@ async def test_resume_skips_completed(tmp_path, store, stub_systems,
 
 
 async def test_unreachable_horizon_is_skipped(tmp_path, store, stub_systems):
-    # close − 365d is before open_time -> horizon_to_asof returns None
+    # close − 365d is before open_time -> horizon_to_asof returns None for
+    # every question, so _select_questions filters them all out before the run.
+    # No cells are created → statuses is empty and the system is never called.
     result = await run_experiment(_spec(horizons=["close-365d"]), store,
                                   tmp_path / "runs", live_llm=False, yes=True)
-    assert set(result.statuses.values()) == {"skipped"}
+    assert result.statuses == {}
     assert stub_systems.calls == 0
 
 

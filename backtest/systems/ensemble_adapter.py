@@ -46,9 +46,13 @@ def _model_set_hash(cfg: BotConfig) -> str:
 
 
 def _question_dict(q: BacktestQuestion) -> dict:
+    # resolution_criteria falls back to description so that market-native
+    # questions (polymarket etc.) whose substance lives in description are
+    # seen by the research stage.
     return dict(question_text=q.title,
-                resolution_criteria=q.resolution_criteria,
+                resolution_criteria=q.resolution_criteria or q.description,
                 fine_print=q.fine_print,
+                description=q.description,
                 qid=q.qid)
 
 
