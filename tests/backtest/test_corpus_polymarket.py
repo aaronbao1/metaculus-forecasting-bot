@@ -74,6 +74,8 @@ async def test_fetch_polymarket_ingests_and_snapshots_prices(
     # empty below ~12h granularity)
     assert seen["clob_params"][0]["market"] == "2222"
     assert seen["clob_params"][0]["fidelity"] == 720
+    # CLOB 400s without a time range (live-verified 2026-06-11)
+    assert seen["clob_params"][0]["interval"] == "max"
     t = datetime(2026, 1, 15, tzinfo=timezone.utc)
     assert store.value_at("polymarket:516710", "market_price", t) == 0.30
     t2 = datetime(2026, 2, 15, tzinfo=timezone.utc)
@@ -149,3 +151,23 @@ async def test_fetch_polymarket_isolates_bad_market(tmp_path, monkeypatch):
     report = await fetch_polymarket(store)
     assert report.fetched == 1
     assert any("X" in e for e in report.errors)
+
+
+async def test_price_history_failure_keeps_question(tmp_path, monkeypatch):
+    """A prices-history error must not cost the question (series are bonus)."""
+    import backtest.corpus.polymarket as pm
+
+    async def fake_get(url, params=None, headers=None, client=None):
+        if "gamma" in url:
+            if params.get("offset", 0) > 0:
+                return []
+            return [GAMMA_PAGE[0]]          # one good Yes/No market
+        raise RuntimeError("clob down")
+
+    monkeypatch.setattr(pm, "_get_json", fake_get)
+    store = CorpusStore(tmp_path / "store")
+    report = await pm.fetch_polymarket(store, limit=1)
+    assert report.fetched == 1
+    qid = f"polymarket:{GAMMA_PAGE[0]['id']}"
+    assert store.get_question(qid) is not None
+    assert any("prices-history" in e for e in report.errors)
