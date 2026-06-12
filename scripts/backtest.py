@@ -82,6 +82,18 @@ def _cmd_run(args, live_llm: bool) -> int:
     return 0
 
 
+def cmd_synth_questions(args) -> int:
+    from backtest.corpus.store import CorpusStore
+    from backtest.corpus.synthetic import generate_questions
+    store = CorpusStore(Path(args.corpus))
+    qs = generate_questions(store, args.source_qid, n=args.n,
+                            horizon_days=args.horizon_days, seed=args.seed,
+                            name=args.name)
+    print(f"generated={len(qs)} (platform=synthetic, "
+          f"source={args.source_qid})")
+    return 0
+
+
 def cmd_compare(args) -> int:
     from backtest.scoring.stats import paired_bootstrap, paired_t
     scores_path = Path(args.run_dir) / "scores.jsonl"
@@ -157,6 +169,19 @@ def main(argv=None) -> int:
                                  "the deterministic no-network StubSystem "
                                  "(CI smoke gate)")
         sp.set_defaults(func=lambda a, _live=live: _cmd_run(a, _live))
+
+    sq = sub.add_parser("synth-questions",
+                        help="generate synthetic numeric questions from a "
+                             "stored target series (Retrocast ext. 4)")
+    sq.add_argument("--corpus", default="data/backtest")
+    sq.add_argument("--source-qid", required=True,
+                    help="qid holding the kind='target' series")
+    sq.add_argument("--n", type=int, default=20)
+    sq.add_argument("--horizon-days", type=float, default=30.0)
+    sq.add_argument("--seed", type=int, default=0)
+    sq.add_argument("--name", default=None,
+                    help="human-readable series name for question titles")
+    sq.set_defaults(func=cmd_synth_questions)
 
     cp = sub.add_parser("compare",
                         help="paired stats between two variants of one run")
