@@ -1,0 +1,26 @@
+{
+  "question": {
+    "qid": "metaculus:90001",
+    "platform": "metaculus",
+    "native_id": "90001",
+    "qtype": "binary",
+    "title": "Will the Aurora index close above 8000 on 2025-02-21?",
+    "description": "Synthetic fixture question for the CI smoke gate.",
+    "resolution_criteria": "Resolves YES if the official closing value exceeds 8000.",
+    "fine_print": "Uses the venue's official close.",
+    "open_time": "2025-01-01T00:00:00+00:00",
+    "scheduled_close_time": "2025-03-01T00:00:00+00:00",
+    "spot_scoring_time": "2025-02-22T00:00:00+00:00",
+    "actual_resolve_time": "2025-03-02T00:00:00+00:00",
+    "resolution": true,
+    "options": [],
+    "scaling": null,
+    "question_weight": 1.0,
+    "provenance": {"source": "fixture", "license": "synthetic", "fetched_at": "2026-06-11T00:00:00+00:00"}
+  },
+  "cp_series": [
+    ["2025-01-05T00:00:00+00:00", 0.55],
+    ["2025-02-01T00:00:00+00:00", 0.70],
+    ["2025-02-20T00:00:00+00:00", 0.82]
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "question": {
+    "qid": "metaculus:90003",
+    "platform": "metaculus",
+    "native_id": "90003",
+    "qtype": "binary",
+    "title": "Will the Cascadia bill pass a floor vote before 2025-03-01?",
+    "description": "Synthetic fixture question for the CI smoke gate.",
+    "resolution_criteria": "Resolves YES on a successful floor vote.",
+    "fine_print": "Committee votes do not count.",
+    "open_time": "2025-01-01T00:00:00+00:00",
+    "scheduled_close_time": "2025-03-01T00:00:00+00:00",
+    "spot_scoring_time": "2025-02-22T00:00:00+00:00",
+    "actual_resolve_time": "2025-03-02T00:00:00+00:00",
+    "resolution": true,
+    "options": [],
+    "scaling": null,
+    "question_weight": 1.0,
+    "provenance": {"source": "fixture", "license": "synthetic", "fetched_at": "2026-06-11T00:00:00+00:00"}
+  },
+  "cp_series": [
+    ["2025-01-05T00:00:00+00:00", 0.50],
+    ["2025-02-01T00:00:00+00:00", 0.60],
+    ["2025-02-20T00:00:00+00:00", 0.66]
+  ]
+}

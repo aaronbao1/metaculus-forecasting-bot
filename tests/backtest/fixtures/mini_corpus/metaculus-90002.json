@@ -1,0 +1,26 @@
+{
+  "question": {
+    "qid": "metaculus:90002",
+    "platform": "metaculus",
+    "native_id": "90002",
+    "qtype": "binary",
+    "title": "Will the Borealis spacecraft attempt a launch before 2025-03-01?",
+    "description": "Synthetic fixture question for the CI smoke gate.",
+    "resolution_criteria": "Resolves YES on any launch attempt before the date.",
+    "fine_print": "Static fires do not count.",
+    "open_time": "2025-01-01T00:00:00+00:00",
+    "scheduled_close_time": "2025-03-01T00:00:00+00:00",
+    "spot_scoring_time": "2025-02-22T00:00:00+00:00",
+    "actual_resolve_time": "2025-03-02T00:00:00+00:00",
+    "resolution": false,
+    "options": [],
+    "scaling": null,
+    "question_weight": 1.0,
+    "provenance": {"source": "fixture", "license": "synthetic", "fetched_at": "2026-06-11T00:00:00+00:00"}
+  },
+  "cp_series": [
+    ["2025-01-05T00:00:00+00:00", 0.40],
+    ["2025-02-01T00:00:00+00:00", 0.25],
+    ["2025-02-20T00:00:00+00:00", 0.12]
+  ]
+}
