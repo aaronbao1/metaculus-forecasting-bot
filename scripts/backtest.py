@@ -8,6 +8,17 @@ post-LLM changes. Heavy imports live inside subcommand functions so
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path as _Path
+
+# When executed as `python scripts/backtest.py`, Python adds the scripts/
+# directory to sys.path[0]. This file is named backtest.py, which would
+# shadow the backtest/ package at the repo root. Fix: insert the repo root
+# (parent of the scripts/ dir) before any other path entries.
+_repo_root = str(_Path(__file__).resolve().parent.parent)
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+del _Path, _repo_root
 import json
 from pathlib import Path
 
