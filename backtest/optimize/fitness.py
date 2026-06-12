@@ -27,6 +27,11 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# canonical implementations shared with the runner's scoring pass and the
+# failure taxonomy (backtest.core owns the 'latest line wins' convention)
+from backtest.core import latest_artifacts
+from backtest.core import stage_value as _stage_value
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,42 +55,20 @@ class BudgetExceeded(RuntimeError):
 
 def temporal_split(questions, train_frac: float = 0.6):
     """Split questions by scheduled_close_time: (train, val) with train
-    strictly the earlier-closing fraction. Optimizers select on train only;
-    val is reported, never selected on."""
-    qs = sorted(questions,
+    strictly the earlier-closing fraction. Duplicates (same qid — e.g. one
+    fitness item per horizon) are collapsed first so a qid can NEVER land on
+    both sides of the cut. Optimizers select on train only; val is reported,
+    never selected on."""
+    by_qid: dict = {}
+    for q in questions:
+        by_qid.setdefault(q.qid, q)
+    qs = sorted(by_qid.values(),
                 key=lambda q: (q.scheduled_close_time is None,
                                q.scheduled_close_time, q.qid))
     cut = int(len(qs) * train_frac)
     return qs[:cut], qs[cut:]
 
 
-def latest_artifacts(run_dir: Path, variant: str | None = None) -> dict:
-    """(qid, horizon) -> latest ForecastArtifact for one variant (or
-    (qid, horizon, variant) -> artifact when variant is None)."""
-    from backtest.core import artifact_from_dict
-    latest: dict = {}
-    path = Path(run_dir) / "artifacts.jsonl"
-    if not path.exists():
-        return latest
-    with path.open() as f:
-        for line in f:
-            if not line.strip():
-                continue
-            a = artifact_from_dict(json.loads(line))
-            if variant is None:
-                latest[(a.qid, a.horizon, a.system_name)] = a
-            elif a.system_name == variant:
-                latest[(a.qid, a.horizon)] = a
-    return latest
-
-
-def _stage_value(artifact, stage: str, attr: str, key: str):
-    for s in artifact.stages:
-        if s.stage == stage:
-            val = getattr(s, attr).get(key)
-            if val is not None:
-                return val
-    return None
 
 
 def _feedback(qid: str, final: float, q, score: float, brier_v) -> str:

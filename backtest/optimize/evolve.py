@@ -64,17 +64,28 @@ def _strip_fences(text: str) -> str:
     return t
 
 
+def _parse_fields(template: str) -> set | None:
+    """Placeholder names, or None when the template is not even parseable
+    (LLM children routinely contain lone '{'/'}' — Formatter.parse raises
+    ValueError on those)."""
+    import string
+    try:
+        return {f for _, f, _, _ in string.Formatter().parse(template) if f}
+    except ValueError:
+        return None
+
+
 def _valid_child(template: str, parent: str) -> bool:
     if CONTRACT_LINE not in template:
         return False
-    # every placeholder of the parent must survive (format() would KeyError
-    # only on unknown placeholders; missing ones silently drop content)
-    import string
-    parent_fields = {f for _, f, _, _ in string.Formatter().parse(parent)
-                     if f}
-    child_fields = {f for _, f, _, _ in string.Formatter().parse(template)
-                    if f}
-    return parent_fields <= child_fields
+    child_fields = _parse_fields(template)
+    if child_fields is None:
+        return False                  # unbalanced braces: skip, don't crash
+    parent_fields = _parse_fields(parent) or set()
+    # parent placeholders must survive AND none may be invented: format()
+    # KeyErrors on unknown fields at eval time, silently scoring the child
+    # -inf with n=0
+    return parent_fields == child_fields
 
 
 def _pareto_best(frontier: list[dict]) -> dict:
@@ -141,6 +152,11 @@ async def reflective_evolve(seed_template: str, fitness, reflect_llm,
     except BudgetExceeded as e:
         logger.warning("evolution stopped on budget: %s", e)
         stopped = "budget"
+    except Exception as e:
+        # never lose paid-for history to an unexpected failure — return the
+        # best-so-far and let the caller persist candidates.jsonl
+        logger.exception("evolution stopped on error: %s", e)
+        stopped = f"error: {type(e).__name__}: {e}"
 
     if not history:
         raise RuntimeError("no candidate was ever evaluated")

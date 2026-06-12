@@ -98,7 +98,9 @@ class CalibratedEnsembleBot:
         if not self.cfg.playbook_path:
             return ""
         from bot.playbook import load_playbook
-        text = load_playbook(self.cfg.playbook_path)
+        # cfg.as_of threads the temporal guard: under a backtest, bullets
+        # distilled from outcomes after T must not reach the prompt
+        text = load_playbook(self.cfg.playbook_path, as_of=self.cfg.as_of)
         if not text:
             return ""
         return ("\nFORECASTING PLAYBOOK (distilled lessons from past "

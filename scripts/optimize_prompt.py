@@ -40,6 +40,12 @@ def main(argv=None) -> int:
     p.add_argument("--corpus", default="data/backtest")
     p.add_argument("--variant", default="current",
                    help="run variant whose cached research/members to use")
+    p.add_argument("--spec", default=None,
+                   help="experiment YAML the run was produced by — "
+                        "reconstructs the variant's exact member config so "
+                        "the un-mutated seed template replays at $0 "
+                        "(STRONGLY recommended; without it the default "
+                        "BotConfig may mismatch the cache and spend fresh)")
     p.add_argument("--budget-usd", type=float, default=25.0)
     p.add_argument("--generations", type=int, default=3)
     p.add_argument("--children", type=int, default=2)
@@ -69,8 +75,23 @@ def main(argv=None) -> int:
                      else BINARY_PROMPT)
     store = CorpusStore(Path(args.corpus))
     llm = CachedLLM(run_dir.parent / "llm_cache", live=True)
+    base_config = None
+    if args.spec:
+        from dataclasses import replace
+
+        from backtest.experiments.runner import build_variant_config
+        from backtest.experiments.spec import ExperimentSpec
+        cfg = build_variant_config(ExperimentSpec.from_yaml(args.spec),
+                                   args.variant)
+        base_config = replace(
+            cfg, calibration_dir=str(run_dir / "optimize-no-calibration"))
+    else:
+        print("[optimize] WARNING: no --spec given — using the default "
+              "BotConfig; if it mismatches the run's member config the "
+              "seed evaluation will MISS the cache and spend fresh calls")
     fitness = PromptFitness(run_dir, store, args.variant, llm,
-                            budget_usd=args.budget_usd)
+                            budget_usd=args.budget_usd,
+                            base_config=base_config)
     if not fitness.questions:
         print(f"no binary questions with cached research for variant "
               f"{args.variant!r} in {run_dir}")

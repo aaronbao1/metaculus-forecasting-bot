@@ -17,6 +17,10 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from backtest.core import latest_artifacts as _latest_artifacts
+from backtest.core import stage_value as _stage_value
+from backtest.systems.baselines import BASELINE_NAMES
+
 logger = logging.getLogger(__name__)
 
 CAUSES = ("research-miss", "elicitation", "aggregation", "calibration",
@@ -51,28 +55,6 @@ Respond with ONLY a JSON object:
   "members": [<indices>]}}]}}"""
 
 
-def _latest_artifacts(run_dir: Path) -> dict:
-    from backtest.core import artifact_from_dict
-    latest: dict = {}
-    path = run_dir / "artifacts.jsonl"
-    if not path.exists():
-        return latest
-    with path.open() as f:
-        for line in f:
-            if not line.strip():
-                continue
-            a = artifact_from_dict(json.loads(line))
-            latest[(a.qid, a.horizon, a.system_name)] = a
-    return latest
-
-
-def _stage_value(artifact, stage: str, field: str, key: str):
-    for s in (artifact.stages if artifact else []):
-        if s.stage == stage:
-            val = getattr(s, field).get(key)
-            if val is not None:
-                return val
-    return None
 
 
 def _parse_json(text: str) -> dict | None:
@@ -96,6 +78,10 @@ async def analyze_failures(run_dir: Path, store, llm, model: str, *,
                 if line.strip()]
     if variant is not None:
         rows = [r for r in rows if r["variant"] == variant]
+    else:
+        # default run: never burn facet calls post-morteming why a coin-flip
+        # baseline "missed the news" (pass --variant chance to opt in)
+        rows = [r for r in rows if r["variant"] not in BASELINE_NAMES]
     rows = [r for r in rows if r.get("baseline_score") is not None]
     rows.sort(key=lambda r: r["baseline_score"])
     worst = rows[:top]

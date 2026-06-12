@@ -46,9 +46,13 @@ and deliberately not implemented.
 
 ```bash
 python scripts/optimize_prompt.py logs/backtest/<run-dir> \
-    --corpus data/backtest --variant current \
+    --corpus data/backtest --spec experiments/<spec>.yaml --variant current \
     --budget-usd 25 --generations 3 --children 2
 ```
+
+Always pass `--spec`: it reconstructs the variant's exact member config
+(profile overrides + patch) so the un-mutated seed template replays from the
+llm_cache at $0 — without it a config mismatch silently spends fresh calls.
 
 Outputs under `<run-dir>/optimize/`: `candidates.jsonl` (every evaluated
 template + train score + worst-question feedback), `best_prompt.txt`,

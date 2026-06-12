@@ -109,6 +109,42 @@ def artifact_to_dict(a: ForecastArtifact) -> dict:
     return d
 
 
+def latest_artifacts(run_dir, variant: str | None = None) -> dict:
+    """The canonical 'latest line wins' scan over a run's artifacts.jsonl
+    (append-only; retries append a fresh line per cell). Returns
+    {(qid, horizon, system_name): artifact}, or {(qid, horizon): artifact}
+    filtered to one variant when given. Single home for the convention —
+    the runner's scoring pass, the optimization fitnesses, and the failure
+    taxonomy must never disagree on which artifact is current."""
+    import json
+    from pathlib import Path
+    latest: dict = {}
+    path = Path(run_dir) / "artifacts.jsonl"
+    if not path.exists():
+        return latest
+    with path.open() as f:
+        for line in f:
+            if not line.strip():
+                continue
+            a = artifact_from_dict(json.loads(line))
+            if variant is None:
+                latest[(a.qid, a.horizon, a.system_name)] = a
+            elif a.system_name == variant:
+                latest[(a.qid, a.horizon)] = a
+    return latest
+
+
+def stage_value(artifact, stage: str, attr: str, key: str):
+    """First non-None value of stages[stage].<attr>[key]; None-tolerant on
+    the artifact itself."""
+    for s in (artifact.stages if artifact else []):
+        if s.stage == stage:
+            val = getattr(s, attr).get(key)
+            if val is not None:
+                return val
+    return None
+
+
 def artifact_from_dict(d: dict) -> ForecastArtifact:
     fc = d.get("forecast")
     forecast = None

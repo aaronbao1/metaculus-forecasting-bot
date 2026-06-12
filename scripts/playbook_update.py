@@ -98,9 +98,23 @@ async def update_playbook(failures: dict, playbook_path, invoke, *,
         added.append(f"- {lesson}{suffix} "
                      f"<!-- id:{bullet_id} source:{source} date:{stamp} -->")
     if added:
-        playbook_path.write_text(text.rstrip() + "\n"
-                                 + "\n".join(added) + "\n")
+        playbook_path.write_text(_insert_into_candidates(text, added))
     return len(added)
+
+
+def _insert_into_candidates(text: str, bullets: list[str]) -> str:
+    """Splice bullets at the END of the '## Candidates' section — not at
+    EOF, which would land them under whatever section happens to be last
+    (worst case '## Promoted', silently bypassing the experiments gate)."""
+    lines = text.splitlines()
+    start = next(i for i, ln in enumerate(lines)
+                 if ln.strip().lower().startswith("## candidates"))
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].startswith("## ")), len(lines))
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    new_lines = lines[:end] + bullets + lines[end:]
+    return "\n".join(new_lines).rstrip() + "\n"
 
 
 def main(argv=None) -> int:

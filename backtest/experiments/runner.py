@@ -16,8 +16,8 @@ import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from backtest.core import (ForecastArtifact, artifact_from_dict,
-                           artifact_to_dict)
+from backtest.core import (ForecastArtifact, artifact_to_dict,
+                           latest_artifacts)
 from backtest.corpus.crosswalk import market_for
 from backtest.experiments.profiles import PROFILES
 from backtest.experiments.spec import ExperimentSpec
@@ -52,9 +52,8 @@ _BASELINE_FACTORIES = {
 }
 
 
-def _build_systems(spec: ExperimentSpec, store) -> dict:
-    """name -> ForecastSystem. Module-level so tests can monkeypatch it."""
-    install_historical_providers()
+def _base_config(spec: ExperimentSpec) -> BotConfig:
+    """The pre-patch BotConfig every variant of this spec starts from."""
     # The live BotConfig default providers (incl. the Perplexity track)
     # would do leaky live research — backtests run on the historical set.
     # Variants may still patch research_providers via their spec patch.
@@ -66,6 +65,26 @@ def _build_systems(spec: ExperimentSpec, store) -> dict:
         # 1-member smoke override cannot satisfy the live min_members=3
         base = replace(base, ensemble=list(profile.ensemble_override),
                        min_members=1)
+    return base
+
+
+def build_variant_config(spec: ExperimentSpec,
+                         variant_name: str) -> BotConfig:
+    """Reconstruct the exact BotConfig a named variant ran with — the
+    config that makes cached completions replay at $0 (cache keys include
+    model/temperature/prompt). Used by scripts/optimize_prompt.py."""
+    base = _base_config(spec)
+    for v in spec.variants:
+        if v["name"] == variant_name:
+            return replace(base, **v.get("patch", {}))
+    raise ValueError(f"variant {variant_name!r} not in spec "
+                     f"(have {[v['name'] for v in spec.variants]})")
+
+
+def _build_systems(spec: ExperimentSpec, store) -> dict:
+    """name -> ForecastSystem. Module-level so tests can monkeypatch it."""
+    install_historical_providers()
+    base = _base_config(spec)
     systems: dict = {}
     for v in spec.variants:
         system = CalibratedEnsembleAdapter.variant(base=base,
@@ -306,16 +325,9 @@ async def run_experiment(spec: ExperimentSpec, store, out_dir: Path, *,
 
 def _score_run(run_dir: Path, store, seed: int = 0,
                model_set_hash: str | None = None) -> None:
-    artifacts_path = run_dir / "artifacts.jsonl"
-    if not artifacts_path.exists():
+    latest = latest_artifacts(run_dir)
+    if not latest:
         return
-    latest: dict = {}
-    with artifacts_path.open() as f:
-        for line in f:
-            if not line.strip():
-                continue
-            a = artifact_from_dict(json.loads(line))
-            latest[(a.qid, a.horizon, a.system_name)] = a
 
     rows = []
     for (qid, horizon, variant), a in sorted(latest.items()):

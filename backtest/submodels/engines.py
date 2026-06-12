@@ -44,6 +44,20 @@ def _to_arrays(points: list[tuple[datetime, float]]):
     return ts, vals
 
 
+def offsets_from_quantile_grid(quantiles: dict[float, float],
+                               median: float) -> dict[float, float]:
+    """Map an arbitrary quantile grid (e.g. TimesFM deciles 10..90) onto the
+    PERCENTILES grid as offsets-from-median, interpolating interior points
+    and clamping beyond the grid's ends. Without this, percentiles absent
+    from the source grid would default to offset 0 in _finalize — collapsing
+    them onto the median and (via the monotonicity pass) destroying the
+    lower half of the distribution."""
+    grid = sorted(quantiles)
+    vals = [quantiles[p] for p in grid]
+    return {p: float(np.interp(p, grid, vals)) - median
+            for p in PERCENTILES}
+
+
 def _finalize(median: float, offsets: dict[float, float], engine: str,
               params: dict, tail_widen: float) -> EngineForecast:
     """Apply tail widening around the median, enforce a minimum spread and
@@ -146,16 +160,23 @@ class ChronosEngine:
         steps = max(1, int(round(horizon_days / dt_med)))
         pipeline = BaseChronosPipeline.from_pretrained(
             self.model_id, device_map="cpu", torch_dtype=torch.float32)
-        levels = [p / 100.0 for p in PERCENTILES]
+        # Bolt's quantile head is trained on [0.1, 0.9]; out-of-range
+        # requests are CLAMPED (95% interval would silently equal the 80%).
+        # Request only the supported band; percentiles_to_cdf does the tails.
+        inner = (10.0, 25.0, 50.0, 75.0, 90.0)
         quantiles, _mean = pipeline.predict_quantiles(
             context=torch.tensor(vals, dtype=torch.float32),
-            prediction_length=steps, quantile_levels=levels)
+            prediction_length=steps,
+            quantile_levels=[p / 100.0 for p in inner])
         last = quantiles[0, -1, :].tolist()
-        median = float(last[PERCENTILES.index(50.0)])
-        offsets = {p: float(v) - median for p, v in zip(PERCENTILES, last)}
-        return _finalize(median, offsets, self.name,
-                         {"model_id": self.model_id, "steps": steps},
-                         self.tail_widen)
+        median = float(last[inner.index(50.0)])
+        offsets = {p: float(v) - median for p, v in zip(inner, last)}
+        fc = _finalize(median, offsets, self.name,
+                       {"model_id": self.model_id, "steps": steps},
+                       self.tail_widen)
+        kept = {p: v for p, v in fc.quantiles.items() if p in inner}
+        return EngineForecast(quantiles=kept, engine=self.name,
+                              params=fc.params)
 
 
 class TimesFMEngine:
@@ -183,10 +204,13 @@ class TimesFMEngine:
         qrow = np.asarray(quantiles)[0, -1, :]
         deciles = {float(10 * i): float(qrow[i]) for i in range(1, 10)}
         median = deciles.get(50.0, float(np.asarray(point)[0, -1]))
-        offsets = {p: v - median for p, v in deciles.items()}
+        # interpolate the decile grid onto PERCENTILES (q25/q75 from
+        # q20/q30 and q70/q80; q2.5/q97.5 clamp to q10/q90)
+        offsets = offsets_from_quantile_grid(deciles, median)
         fc = _finalize(median, offsets, self.name, {"steps": steps},
                        self.tail_widen)
-        # restrict to the deciles TimesFM actually produces (+ median)
+        # emit only the band the model genuinely supports (clamped 2.5/97.5
+        # would be false precision); percentiles_to_cdf supplies the tails
         kept = {p: v for p, v in fc.quantiles.items()
                 if p in (10.0, 25.0, 50.0, 75.0, 90.0)}
         return EngineForecast(quantiles=kept, engine=self.name,

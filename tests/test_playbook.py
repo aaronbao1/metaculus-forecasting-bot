@@ -24,12 +24,12 @@ PLAYBOOK = textwrap.dedent("""\
 
     ## Promoted
 
-    - For sanctions questions, check the OFAC press page first. <!-- id:pb-1 source:run-1 date:2026-06-11 -->
-    - Decay deadline-bound probabilities absent news. <!-- id:pb-2 source:run-1 date:2026-06-11 -->
+    - For sanctions questions, check the OFAC press page first. <!-- id:pb-1 source:run-1 date:2026-01-01 -->
+    - Decay deadline-bound probabilities absent news. <!-- id:pb-2 source:run-1 date:2026-01-01 -->
 
     ## Candidates
 
-    - Never inject me. <!-- id:pb-3 source:run-1 date:2026-06-11 -->
+    - Never inject me. <!-- id:pb-3 source:run-1 date:2026-01-01 -->
     """)
 
 

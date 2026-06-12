@@ -73,6 +73,15 @@ class BotConfig:
 def config_hash(cfg: BotConfig) -> str:
     d = asdict(cfg)
     d.pop("as_of", None)     # backtest-only knob; must not perturb live hashes
+    if cfg.playbook_path:
+        # Fingerprint the playbook CONTENT, not just the path: editing
+        # '## Promoted' changes every rendered prompt and must change the
+        # run identity (manifest-resume safety). Hash the un-filtered
+        # promoted block (as_of-independent — as_of must never enter the
+        # hash); Candidates appends don't churn it.
+        from bot.playbook import load_playbook
+        d["playbook_content_sha"] = hashlib.sha256(
+            load_playbook(cfg.playbook_path).encode()).hexdigest()
     blob = json.dumps(d, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 

@@ -74,9 +74,14 @@ def generate_questions(store: CorpusStore, source_qid: str, *, n: int,
                      / 86400.0, 1.0)
         drift = (window_pts[-1][1] - window_pts[0][1]) / w_days
         trend_pad = 2.0 * abs(drift) * horizon_days
+        # midnight anchors keep the short date-only tag (no cache churn for
+        # daily series); intraday anchors need the time to stay unique
+        ts_tag = (t0.date().isoformat()
+                  if (t0.hour, t0.minute, t0.second) == (0, 0, 0)
+                  else t0.strftime("%Y-%m-%dT%H%M%S"))
         q = BacktestQuestion(
             qid=f"synthetic:{source_qid.replace(':', '_')}"
-                f"-{t0.date().isoformat()}-{int(horizon_days)}d",
+                f"-{ts_tag}-{int(horizon_days)}d",
             platform="synthetic", native_id=f"{source_qid}-{i}",
             qtype=QType.NUMERIC,
             title=(f"What will {label} be on {close.date().isoformat()}? "
@@ -87,7 +92,11 @@ def generate_questions(store: CorpusStore, source_qid: str, *, n: int,
             resolution_criteria=(f"Resolves to the value of {label} at "
                                  f"{close.date().isoformat()} (last "
                                  "observation on or before that date)."),
-            open_time=t0 - timedelta(days=MIN_HISTORY),
+            # open_time = t0, NOT earlier: scaling bounds are computed from
+            # data through t0, and horizon_to_asof can place as_of anywhere
+            # in [open_time, close) — an earlier open would let bounds leak
+            # post-as_of observations into the prompt and the scored grid
+            open_time=t0,
             scheduled_close_time=close,
             actual_resolve_time=close,
             resolution=resolution,

@@ -46,15 +46,30 @@ def _now_iso() -> str:
 # I3 — content-addressed research cache
 # ---------------------------------------------------------------------------
 
+# Providers whose output depends on BotConfig beyond the provider list —
+# their config knobs must salt the research cache key or variants A/B-ing
+# those knobs would silently share dossiers (guaranteed null result).
+_CFG_DEPENDENT_PROVIDERS = {"asknews_rated"}
+
+
 def _research_cache_key(qid: str, as_of: datetime,
-                        providers: list[str]) -> str:
-    """sha256(qid | as_of_iso | comma-joined-providers).
+                        providers: list[str], cfg_salt: str = "") -> str:
+    """sha256(qid | as_of_iso | comma-joined-providers [| cfg_salt]).
 
     Stable for any ordering: providers are sorted before joining so that
     differently-ordered provider lists with the same members share a cache.
     """
     payload = f"{qid}|{as_of.isoformat()}|{','.join(sorted(providers))}"
+    if cfg_salt:
+        payload += f"|{cfg_salt}"
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _research_cfg_salt(cfg: BotConfig) -> str:
+    """Cache-key salt for config-dependent providers ("" otherwise)."""
+    if _CFG_DEPENDENT_PROVIDERS & set(cfg.research_providers):
+        return f"parser_model={cfg.parser_model}"
+    return ""
 
 
 def _research_cache_dir(llm_cache_dir: Path) -> Path:
@@ -187,12 +202,14 @@ async def _forecast_binary(bot: _BacktestEnsembleBot, q: BacktestQuestion,
         stage="aggregation",
         inputs={"member_probs": list(r.member_probs),
                 "member_models": list(r.member_models),
-                "method": bot.cfg.aggregation_method},
+                "method": bot.cfg.aggregation_method,
+                "n_trim": bot.cfg.n_trim},
         outputs={"aggregate_raw": r.aggregate_raw, "spread": r.spread}))
     stages.append(StageRecord(
         stage="calibration",
         inputs={"aggregate_raw": r.aggregate_raw,
-                "cap_lo": bot.cfg.cap_lo, "cap_hi": bot.cfg.cap_hi},
+                "cap_lo": bot.cfg.cap_lo, "cap_hi": bot.cfg.cap_hi,
+                "extremize_a": bot.cfg.extremize_a},
         outputs={"final": r.final}))
     return Forecast(qtype=q.qtype, binary_prob=r.final)
 
@@ -342,7 +359,8 @@ class CalibratedEnsembleAdapter:
             if ctx.llm is not None and hasattr(ctx.llm, "cache_dir"):
                 r_key = _research_cache_key(
                     q.qid, ctx.as_of,
-                    list(run_cfg.research_providers))
+                    list(run_cfg.research_providers),
+                    cfg_salt=_research_cfg_salt(run_cfg))
                 r_cache_dir = _research_cache_dir(ctx.llm.cache_dir)
                 cached = _load_research_cache(r_cache_dir, r_key)
                 if cached is not None:
