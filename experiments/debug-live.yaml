@@ -1,0 +1,19 @@
+# Tiny LIVE debug run — 3 questions through the real pipeline (real LLMs,
+# real AskNews archive) to flush integration bugs before the main run.
+name: debug-live
+corpus:
+  stratum: clean
+  resolved_only: true
+  qtypes: [binary]
+  limit: 3
+horizons: [close-7d]
+cutoff_mode: strict
+profile: standard
+variants:
+  - name: current
+    patch:
+      # exa_historical excluded: EXA_API_KEY unset; gdelt_wayback excluded
+      # from run 1 for speed/rate-limit reasons (documented choice)
+      research_providers: [asknews_historical, markets_historical]
+baselines: [chance, cp_echo, market_echo]
+seed: 0
