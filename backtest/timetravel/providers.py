@@ -142,6 +142,57 @@ async def _asknews_historical_research(question: dict, cfg) -> str:
             + "\n".join(f"- {p}" for p in parts))
 
 
+async def _timeseries_research(question: dict, cfg) -> str:
+    """Quantitative anchor for numeric/discrete questions: run a cheap TS
+    engine over the question's target series (history <= T, leak-free by
+    construction) and emit median + 80% interval. Skips ("") when the
+    question is not numeric or has no series — the compositor drops the
+    section. Engine choice is deliberately conservative (naive_drift): the
+    anchor is a sanity rail for the LLM members, not the forecast."""
+    ctx = _require_context("timeseries")
+    if ctx.store is None:
+        raise RuntimeError("timeseries: AsOfContext.store is not set")
+    qid = question.get("qid")
+    if not qid:
+        raise RuntimeError("timeseries: question dict has no 'qid'")
+    q = ctx.store.get_question(qid)
+    if q is None or q.qtype.value not in ("numeric", "discrete"):
+        return ""
+    raw = ctx.store.series_points(qid, "target", until=ctx.as_of)
+    if len(raw) < 8 or q.scheduled_close_time is None:
+        return ""
+    from backtest.submodels.engines import get_engine
+    points = []
+    for ts, v in raw:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            from datetime import timezone as _tz
+            dt = dt.replace(tzinfo=_tz.utc)
+        points.append((dt, float(v)))
+    close = q.scheduled_close_time
+    if close.tzinfo is None:
+        from datetime import timezone as _tz
+        close = close.replace(tzinfo=_tz.utc)
+    horizon_days = (close - ctx.as_of).total_seconds() / 86400.0
+    if horizon_days <= 0:
+        return ""
+    fc = get_engine("naive_drift").fit_predict(points, horizon_days)
+    unit = (q.scaling or {}).get("unit") or ""
+    unit_sfx = f" {unit}" if unit else ""
+    ctx.record(LedgerEntry(
+        provider="timeseries", query=qid, url=None,
+        doc_date=ctx.as_of.isoformat(), date_trust="snapshot",
+        note=f"engine={fc.engine} over {len(points)} target-series points"))
+    return (f"Statistical time-series anchor ({fc.engine}, "
+            f"{len(points)} observations through "
+            f"{ctx.as_of.date().isoformat()}): median "
+            f"{fc.quantiles[50.0]:.4g}{unit_sfx}, 80% interval "
+            f"[{fc.quantiles[10.0]:.4g}, {fc.quantiles[90.0]:.4g}]"
+            f"{unit_sfx} at the close date. Treat this as a quantitative "
+            "anchor from the historical series alone; adjust for events "
+            "and regime changes the model cannot see.")
+
+
 # --- shared HTTP seams (monkeypatch targets in tests; never hit in CI) -----
 
 HTTP_TIMEOUT_S = 30.0
@@ -377,6 +428,7 @@ HISTORICAL_PROVIDERS = (
     _exa_historical_research,
     _markets_historical_research,
     _serper_dated_research,
+    _timeseries_research,
 )
 
 _HISTORICAL_SECTION_TITLES = {
@@ -385,6 +437,7 @@ _HISTORICAL_SECTION_TITLES = {
     "gdelt_wayback": "News archive (GDELT+Wayback ≤ T)",
     "exa_historical": "Web search (Exa crawl ≤ T)",
     "serper_dated": "Web search (date-filtered, leak-screened)",
+    "timeseries": "Statistical time-series anchor",
 }
 
 
