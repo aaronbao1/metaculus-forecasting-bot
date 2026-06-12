@@ -142,6 +142,40 @@ async def _asknews_historical_research(question: dict, cfg) -> str:
             + "\n".join(f"- {p}" for p in parts))
 
 
+async def _asknews_rated_research(question: dict, cfg) -> str:
+    """AskNews archive dossier passed through the GABRIEL-style relevance
+    filter (bot/rating.py): each article is rated 0-100 against the
+    resolution criteria by cfg.parser_model (cheap), items below threshold
+    are dropped. Rating calls route through ctx.llm — cached, cost-tracked,
+    reproducible. Fail-open: unrated items are kept."""
+    ctx = _require_context("asknews_rated")
+    if ctx.llm is None:
+        raise RuntimeError("asknews_rated: AsOfContext.llm is required "
+                           "for rating calls")
+    # module attribute (not bare name) so tests monkeypatching the base
+    # provider are honored
+    import backtest.timetravel.providers as _self
+    dossier = await _self._asknews_historical_research(question, cfg)
+    if not dossier.strip():
+        return ""
+    from bot.rating import filter_dossier
+
+    async def invoke(prompt: str, sample_idx: int) -> str:
+        return await ctx.llm.invoke(cfg.parser_model, prompt, 0.0,
+                                    run_index=sample_idx)
+
+    qctx = {"question_text": question.get("question_text", ""),
+            "resolution_criteria": question.get("resolution_criteria", "")}
+    filtered, ratings = await filter_dossier(dossier, qctx, invoke)
+    rated = [r for r in ratings if r is not None]
+    ctx.record(LedgerEntry(
+        provider="asknews_rated", query=question.get("question_text", ""),
+        url=None, doc_date=ctx.as_of.isoformat(), date_trust="snapshot",
+        note=(f"relevance filter: rated {len(rated)}/{len(ratings)} items "
+              f"via {cfg.parser_model}")))
+    return filtered
+
+
 async def _timeseries_research(question: dict, cfg) -> str:
     """Quantitative anchor for numeric/discrete questions: run a cheap TS
     engine over the question's target series (history <= T, leak-free by
@@ -429,6 +463,7 @@ HISTORICAL_PROVIDERS = (
     _markets_historical_research,
     _serper_dated_research,
     _timeseries_research,
+    _asknews_rated_research,
 )
 
 _HISTORICAL_SECTION_TITLES = {
@@ -438,6 +473,7 @@ _HISTORICAL_SECTION_TITLES = {
     "exa_historical": "Web search (Exa crawl ≤ T)",
     "serper_dated": "Web search (date-filtered, leak-screened)",
     "timeseries": "Statistical time-series anchor",
+    "asknews_rated": "News search (AskNews archive at T, relevance-filtered)",
 }
 
 
