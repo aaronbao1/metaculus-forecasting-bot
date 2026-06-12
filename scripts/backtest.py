@@ -49,6 +49,12 @@ def cmd_build_corpus(args) -> int:
     elif args.source == "manifold":
         from backtest.corpus.manifold import fetch_manifold
         report = asyncio.run(fetch_manifold(store, limit=args.limit))
+    elif args.source == "fred":
+        from backtest.corpus.fred import fetch_fred
+        if not args.series_ids:
+            print("--series-ids is required for fred")
+            return 2
+        report = asyncio.run(fetch_fred(store, args.series_ids))
     elif args.source == "halawi":
         from backtest.corpus.halawi import import_halawi
         report = import_halawi(store, Path(args.dataset_dir))
@@ -142,13 +148,15 @@ def main(argv=None) -> int:
                         help="fetch/import questions into the corpus store")
     bc.add_argument("--source", required=True,
                     choices=["metaculus", "polymarket", "kalshi", "manifold",
-                             "halawi", "forecastbench"])
+                             "halawi", "forecastbench", "fred"])
     bc.add_argument("--corpus", default="data/backtest",
                     help="corpus root (default data/backtest)")
     bc.add_argument("--limit", type=int, default=None)
     bc.add_argument("--tournaments", nargs="*", default=None)
     bc.add_argument("--dataset-dir", default=None,
                     help="local dataset dir (halawi/forecastbench)")
+    bc.add_argument("--series-ids", nargs="*", default=None,
+                    help="FRED series ids (fred source), e.g. CPIAUCSL")
     bc.set_defaults(func=cmd_build_corpus)
 
     for name, live, help_text in (
