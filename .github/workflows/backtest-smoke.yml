@@ -24,10 +24,10 @@ jobs:
         run: python scripts/backtest.py run --spec experiments/smoke.yaml --corpus data/backtest/ci-smoke --out logs/backtest/ci-smoke --system stub --yes
       - name: Build report
         run: |
-          RUN_DIR=$(ls -d logs/backtest/ci-smoke/*/ | head -n 1)
+          RUN_DIR=$(ls -d logs/backtest/ci-smoke/*/ | grep -v llm_cache | head -n 1)
           python scripts/backtest.py report "$RUN_DIR"
       - name: Regression check vs committed baseline
         # mean-with-tolerance vs a committed value, NOT a paired significance test — sufficient because the stub run is deterministic; live regression gating would need paired stats from backtest/scoring/stats.py
         run: |
-          RUN_DIR=$(ls -d logs/backtest/ci-smoke/*/ | head -n 1)
+          RUN_DIR=$(ls -d logs/backtest/ci-smoke/*/ | grep -v llm_cache | head -n 1)
           python scripts/check_regression.py --scores "${RUN_DIR%/}/scores.jsonl" --baseline tests/backtest/fixtures/smoke_baseline.json
