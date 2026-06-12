@@ -102,10 +102,25 @@ async def _asknews_historical_research(question: dict, cfg) -> str:
                       scopes={"news"})
     else:
         sdk = sdk_cls(api_key=os.getenv("ASKNEWS_API_KEY"), scopes={"news"})
+    # historical=True silently returns ZERO articles unless BOTH
+    # start_timestamp and end_timestamp are set (live-verified 2026-06-11).
+    # Window start: question open time (Halawi protocol) when the caller
+    # provides it, else 90 days before T.
+    end_ts = int(ctx.as_of.timestamp())
+    open_iso = question.get("open_time_iso")
+    if open_iso:
+        start_dt = datetime.fromisoformat(
+            str(open_iso).replace("Z", "+00:00"))
+        if start_dt.tzinfo is None:
+            from datetime import timezone as _tz
+            start_dt = start_dt.replace(tzinfo=_tz.utc)
+        start_ts = min(int(start_dt.timestamp()), end_ts - 3600)
+    else:
+        start_ts = end_ts - 90 * 86400
     resp = await sdk.news.search_news(
         query=question["question_text"], n_articles=ASKNEWS_N_ARTICLES,
         return_type="dicts", historical=True,
-        end_timestamp=int(ctx.as_of.timestamp()))
+        start_timestamp=start_ts, end_timestamp=end_ts)
     articles = getattr(resp, "as_dicts", None) or []
     parts = []
     for a in articles:
@@ -125,6 +140,91 @@ async def _asknews_historical_research(question: dict, cfg) -> str:
     return ("Historical news snapshots (AskNews archive, ingestion-time, "
             f"end_timestamp={ctx.as_of.isoformat()}):\n"
             + "\n".join(f"- {p}" for p in parts))
+
+
+async def _asknews_rated_research(question: dict, cfg) -> str:
+    """AskNews archive dossier passed through the GABRIEL-style relevance
+    filter (bot/rating.py): each article is rated 0-100 against the
+    resolution criteria by cfg.parser_model (cheap), items below threshold
+    are dropped. Rating calls route through ctx.llm — cached, cost-tracked,
+    reproducible. Fail-open: unrated items are kept."""
+    ctx = _require_context("asknews_rated")
+    if ctx.llm is None:
+        raise RuntimeError("asknews_rated: AsOfContext.llm is required "
+                           "for rating calls")
+    # module attribute (not bare name) so tests monkeypatching the base
+    # provider are honored
+    import backtest.timetravel.providers as _self
+    dossier = await _self._asknews_historical_research(question, cfg)
+    if not dossier.strip():
+        return ""
+    from bot.rating import filter_dossier
+
+    async def invoke(prompt: str, sample_idx: int) -> str:
+        return await ctx.llm.invoke(cfg.parser_model, prompt, 0.0,
+                                    run_index=sample_idx)
+
+    qctx = {"question_text": question.get("question_text", ""),
+            "resolution_criteria": question.get("resolution_criteria", "")}
+    filtered, ratings = await filter_dossier(dossier, qctx, invoke)
+    rated = [r for r in ratings if r is not None]
+    ctx.record(LedgerEntry(
+        provider="asknews_rated", query=question.get("question_text", ""),
+        url=None, doc_date=ctx.as_of.isoformat(), date_trust="snapshot",
+        note=(f"relevance filter: rated {len(rated)}/{len(ratings)} items "
+              f"via {cfg.parser_model}")))
+    return filtered
+
+
+async def _timeseries_research(question: dict, cfg) -> str:
+    """Quantitative anchor for numeric/discrete questions: run a cheap TS
+    engine over the question's target series (history <= T, leak-free by
+    construction) and emit median + 80% interval. Skips ("") when the
+    question is not numeric or has no series — the compositor drops the
+    section. Engine choice is deliberately conservative (naive_drift): the
+    anchor is a sanity rail for the LLM members, not the forecast."""
+    ctx = _require_context("timeseries")
+    if ctx.store is None:
+        raise RuntimeError("timeseries: AsOfContext.store is not set")
+    qid = question.get("qid")
+    if not qid:
+        raise RuntimeError("timeseries: question dict has no 'qid'")
+    q = ctx.store.get_question(qid)
+    if q is None or q.qtype.value not in ("numeric", "discrete"):
+        return ""
+    raw = ctx.store.series_points(qid, "target", until=ctx.as_of)
+    if len(raw) < 8 or q.scheduled_close_time is None:
+        return ""
+    from backtest.submodels.engines import get_engine
+    points = []
+    for ts, v in raw:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            from datetime import timezone as _tz
+            dt = dt.replace(tzinfo=_tz.utc)
+        points.append((dt, float(v)))
+    close = q.scheduled_close_time
+    if close.tzinfo is None:
+        from datetime import timezone as _tz
+        close = close.replace(tzinfo=_tz.utc)
+    horizon_days = (close - ctx.as_of).total_seconds() / 86400.0
+    if horizon_days <= 0:
+        return ""
+    fc = get_engine("naive_drift").fit_predict(points, horizon_days)
+    unit = (q.scaling or {}).get("unit") or ""
+    unit_sfx = f" {unit}" if unit else ""
+    ctx.record(LedgerEntry(
+        provider="timeseries", query=qid, url=None,
+        doc_date=ctx.as_of.isoformat(), date_trust="snapshot",
+        note=f"engine={fc.engine} over {len(points)} target-series points"))
+    return (f"Statistical time-series anchor ({fc.engine}, "
+            f"{len(points)} observations through "
+            f"{ctx.as_of.date().isoformat()}): median "
+            f"{fc.quantiles[50.0]:.4g}{unit_sfx}, 80% interval "
+            f"[{fc.quantiles[10.0]:.4g}, {fc.quantiles[90.0]:.4g}]"
+            f"{unit_sfx} at the close date. Treat this as a quantitative "
+            "anchor from the historical series alone; adjust for events "
+            "and regime changes the model cannot see.")
 
 
 # --- shared HTTP seams (monkeypatch targets in tests; never hit in CI) -----
@@ -362,6 +462,8 @@ HISTORICAL_PROVIDERS = (
     _exa_historical_research,
     _markets_historical_research,
     _serper_dated_research,
+    _timeseries_research,
+    _asknews_rated_research,
 )
 
 _HISTORICAL_SECTION_TITLES = {
@@ -370,6 +472,8 @@ _HISTORICAL_SECTION_TITLES = {
     "gdelt_wayback": "News archive (GDELT+Wayback ≤ T)",
     "exa_historical": "Web search (Exa crawl ≤ T)",
     "serper_dated": "Web search (date-filtered, leak-screened)",
+    "timeseries": "Statistical time-series anchor",
+    "asknews_rated": "News search (AskNews archive at T, relevance-filtered)",
 }
 
 

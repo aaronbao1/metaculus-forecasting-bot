@@ -77,27 +77,38 @@ async def test_replay_mode_serves_cached_completions(llm, tmp_path):
     assert await replay.invoke("m", "P", 0.0) == "completion for: P"
 
 
-async def test_tokens_and_cost_recorded_when_response_carries_them(
-        tmp_path, monkeypatch):
-    class Usage:
-        prompt_tokens = 11
-        completion_tokens = 7
-
-    class Resp(str):
-        usage = Usage()
-        cost = 0.0042
-
-    class RichLlm:
+async def test_cost_captured_via_monetary_cost_manager(tmp_path, monkeypatch):
+    """Cost is captured via MonetaryCostManager (litellm callback), not by
+    inspecting the response object.  GeneralLlm.invoke() returns a plain str so
+    token counts are always 0; cost must come from MonetaryCostManager.current_usage.
+    """
+    class PlainLlm:
         def __init__(self, model, temperature, timeout=None):
             pass
 
         async def invoke(self, prompt):
-            return Resp("rich completion")
+            return "plain completion"   # plain str, no .usage / .cost attrs
 
-    monkeypatch.setattr("forecasting_tools.GeneralLlm", RichLlm)
+    EXPECTED_COST = 0.0099
+
+    class FakeCostManager:
+        def __init__(self, *a, **kw):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            pass
+        @property
+        def current_usage(self):
+            return EXPECTED_COST
+
+    monkeypatch.setattr("forecasting_tools.GeneralLlm", PlainLlm)
+    monkeypatch.setattr("forecasting_tools.MonetaryCostManager", FakeCostManager)
+
     llm = CachedLLM(tmp_path / "cache")
-    assert await llm.invoke("m", "P", 0.0) == "rich completion"
+    assert await llm.invoke("m", "P", 0.0) == "plain completion"
     key = cache_key("m", "P", 0.0, 0)
     rec = json.loads((tmp_path / "cache" / f"{key}.json").read_text())
-    assert rec["tokens_in"] == 11 and rec["tokens_out"] == 7
-    assert rec["cost_usd"] == pytest.approx(0.0042)
+    # Tokens are always 0 (plain-str response)
+    assert rec["tokens_in"] == 0 and rec["tokens_out"] == 0
+    assert rec["cost_usd"] == pytest.approx(EXPECTED_COST)

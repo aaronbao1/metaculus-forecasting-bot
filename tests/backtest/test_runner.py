@@ -92,7 +92,8 @@ async def test_full_run_writes_manifest_artifacts_scores(
     assert len(rows) == 2
     assert set(rows[0]) == {"qid", "horizon", "variant", "log_score",
                             "baseline_score", "brier", "h2h_cp",
-                            "h2h_market", "stratum", "resolution"}
+                            "h2h_market", "stratum", "resolution",
+                            "platform", "price_at_T", "price_at_T_ts"}
     by_qid = {r["qid"]: r for r in rows}
     assert by_qid["metaculus:1"]["h2h_cp"] is not None   # CP series present
     assert by_qid["metaculus:2"]["h2h_cp"] is None
@@ -122,10 +123,12 @@ async def test_resume_skips_completed(tmp_path, store, stub_systems,
 
 
 async def test_unreachable_horizon_is_skipped(tmp_path, store, stub_systems):
-    # close − 365d is before open_time -> horizon_to_asof returns None
+    # close − 365d is before open_time -> horizon_to_asof returns None for
+    # every question, so _select_questions filters them all out before the run.
+    # No cells are created → statuses is empty and the system is never called.
     result = await run_experiment(_spec(horizons=["close-365d"]), store,
                                   tmp_path / "runs", live_llm=False, yes=True)
-    assert set(result.statuses.values()) == {"skipped"}
+    assert result.statuses == {}
     assert stub_systems.calls == 0
 
 
@@ -341,3 +344,20 @@ async def test_mid_run_actual_spend_brake(tmp_path, store, monkeypatch):
     assert "done" in manifest["statuses"].values()
     # actual_cost_usd must be present in the manifest
     assert "actual_cost_usd" in manifest
+
+
+def test_corpus_limit_caps_below_profile(tmp_path):
+    """spec corpus 'limit' tightens the profile's max_questions cap."""
+    from backtest.experiments.runner import _select_questions
+    from backtest.experiments.profiles import PROFILES
+    from backtest.experiments.spec import ExperimentSpec
+
+    store = CorpusStore(tmp_path / "store")
+    for i in range(5):
+        store.upsert_question(_q(i, resolution=True))
+    spec = ExperimentSpec(name="cap", corpus={"limit": 2},
+                          horizons=["close-7d"], cutoff_mode="strict",
+                          profile="standard", variants=[], baselines=[],
+                          seed=0)
+    qs = _select_questions(spec, store, PROFILES["standard"])
+    assert len(qs) == 2

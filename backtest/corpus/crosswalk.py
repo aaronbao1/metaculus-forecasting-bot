@@ -102,14 +102,35 @@ async def build_crosswalk(store: CorpusStore, llm, *,
 
 
 def market_for(store: CorpusStore, qid: str) -> str | None:
-    """Best market qid for a question. manual_override wins."""
+    """Best market qid for a question. manual_override wins.
+
+    Identity fallback: if qid's platform is a market platform (polymarket /
+    kalshi / manifold) AND the store has a (qid, "market_price") series,
+    the question IS its own market — return qid directly.  Explicit crosswalk
+    rows (manual_override or verified match) still take precedence.
+    """
+    # Manual override always wins.
     row = store.conn.execute(
         "SELECT manual_override FROM crosswalk"
         " WHERE qid = ? AND manual_override IS NOT NULL", (qid,)).fetchone()
     if row:
         return row["manual_override"]
+
+    # Verified crosswalk match wins over identity.
     row = store.conn.execute(
         "SELECT market_qid FROM crosswalk"
         " WHERE qid = ? AND verified = 1"
         " ORDER BY score DESC LIMIT 1", (qid,)).fetchone()
-    return row["market_qid"] if row else None
+    if row:
+        return row["market_qid"]
+
+    # Identity fallback for market-native questions that have a price series.
+    platform = qid.split(":", 1)[0] if ":" in qid else ""
+    if platform in MARKET_PLATFORMS:
+        has_series = store.conn.execute(
+            "SELECT 1 FROM series WHERE qid = ? AND kind = 'market_price'",
+            (qid,)).fetchone()
+        if has_series:
+            return qid
+
+    return None

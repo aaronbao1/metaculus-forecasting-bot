@@ -60,11 +60,16 @@ CREATE TABLE IF NOT EXISTS questions (
 );
 CREATE TABLE IF NOT EXISTS series (
     qid TEXT NOT NULL,
-    kind TEXT NOT NULL,         -- "cp" | "market_price"
+    kind TEXT NOT NULL,         -- "cp" | "market_price" | "target"
     blob_path TEXT NOT NULL,    -- relative to store root
     n_points INTEGER NOT NULL,
     PRIMARY KEY (qid, kind)
 );
+-- kind="target": the underlying quantity a numeric/discrete question asks
+-- about (FRED fetcher, CSV importer); read whole via
+-- CorpusStore.series_points(qid, kind, until=T). platform="synthetic"
+-- questions (backtest/corpus/synthetic.py) are generated from these series
+-- with the series copied to the new qid.
 CREATE TABLE IF NOT EXISTS contamination (
     qid TEXT NOT NULL,
     model_set_hash TEXT NOT NULL,

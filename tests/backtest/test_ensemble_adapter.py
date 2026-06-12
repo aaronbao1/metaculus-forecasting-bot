@@ -392,7 +392,7 @@ async def test_prompt_byte_level_parity(tmp_path, stub_research):
         background_info=q.description,
         resolution_criteria=q.resolution_criteria,
         fine_print=q.fine_print,
-        research="stub research",
+        research="stub research", playbook_section="",
         today=AS_OF.date().isoformat(),
         close_date=close_iso[:10],
         days_remaining=_days_remaining(close_iso, now=AS_OF))

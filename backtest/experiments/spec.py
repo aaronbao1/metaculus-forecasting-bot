@@ -17,6 +17,9 @@ class ExperimentSpec:
     profile: str = "smoke"
     variants: list = field(default_factory=list)
     baselines: list = field(default_factory=list)
+    # Registry-backed non-ensemble systems (backtest/systems/registry.py):
+    # [{name, kind, params}] — e.g. kind "timeseries" for TS submodels.
+    systems: list = field(default_factory=list)
     seed: int = 0
 
     @classmethod
@@ -37,4 +40,8 @@ class ExperimentSpec:
             if not isinstance(v, dict) or "name" not in v:
                 raise ValueError(
                     f"each variant needs at least a 'name': {v!r}")
+        for s in d.get("systems") or []:
+            if not isinstance(s, dict) or "name" not in s or "kind" not in s:
+                raise ValueError(
+                    f"each system needs a 'name' and a 'kind': {s!r}")
         return cls(**d)

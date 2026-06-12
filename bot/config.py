@@ -34,10 +34,22 @@ def _default_ensemble() -> list[EnsembleMember]:
 class BotConfig:
     ensemble: list[EnsembleMember] = field(default_factory=_default_ensemble)
     aggregation_method: str = "trimmed_gmo"
+    n_trim: int = 1                   # forecasts dropped per side (trimmed_gmo)
+    # Fixed-α Karmarkar extremization between aggregation and calibration.
+    # 1.0 = identity. Pre-registered roadmap #1 arm; fitted extremization
+    # stays rejected — only fixed, pre-registered values belong here.
+    extremize_a: float = 1.0
     min_members: int = 3              # skip question if fewer members survive
     cap_lo: float = 0.02
     cap_hi: float = 0.98
     mc_floor: float = 0.01
+    # Per-qtype prompt template overrides ({"binary": "..."}). Empty = the
+    # constants in bot/prompts.py. The optimization harness ships winners
+    # through this field so candidate prompts are config, never code edits.
+    prompt_overrides: dict = field(default_factory=dict)
+    # Path to skills/forecasting-playbook.md. None = off; rendered prompts
+    # are byte-identical to the no-playbook era (cache-hit preservation).
+    playbook_path: str | None = None
     # Research: ALL providers run in parallel and compose into one report —
     # distinct-source count was the #1 Fall-2025 winner predictor (r=0.42).
     research_providers: tuple = ("asknews", "search_llm", "markets")
@@ -61,6 +73,15 @@ class BotConfig:
 def config_hash(cfg: BotConfig) -> str:
     d = asdict(cfg)
     d.pop("as_of", None)     # backtest-only knob; must not perturb live hashes
+    if cfg.playbook_path:
+        # Fingerprint the playbook CONTENT, not just the path: editing
+        # '## Promoted' changes every rendered prompt and must change the
+        # run identity (manifest-resume safety). Hash the un-filtered
+        # promoted block (as_of-independent — as_of must never enter the
+        # hash); Candidates appends don't churn it.
+        from bot.playbook import load_playbook
+        d["playbook_content_sha"] = hashlib.sha256(
+            load_playbook(cfg.playbook_path).encode()).hexdigest()
     blob = json.dumps(d, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:12]
 

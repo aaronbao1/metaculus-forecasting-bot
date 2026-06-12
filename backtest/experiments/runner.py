@@ -16,8 +16,8 @@ import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from backtest.core import (ForecastArtifact, artifact_from_dict,
-                           artifact_to_dict)
+from backtest.core import (ForecastArtifact, artifact_to_dict,
+                           latest_artifacts)
 from backtest.corpus.crosswalk import market_for
 from backtest.experiments.profiles import PROFILES
 from backtest.experiments.spec import ExperimentSpec
@@ -52,9 +52,8 @@ _BASELINE_FACTORIES = {
 }
 
 
-def _build_systems(spec: ExperimentSpec, store) -> dict:
-    """name -> ForecastSystem. Module-level so tests can monkeypatch it."""
-    install_historical_providers()
+def _base_config(spec: ExperimentSpec) -> BotConfig:
+    """The pre-patch BotConfig every variant of this spec starts from."""
     # The live BotConfig default providers (incl. the Perplexity track)
     # would do leaky live research — backtests run on the historical set.
     # Variants may still patch research_providers via their spec patch.
@@ -66,6 +65,26 @@ def _build_systems(spec: ExperimentSpec, store) -> dict:
         # 1-member smoke override cannot satisfy the live min_members=3
         base = replace(base, ensemble=list(profile.ensemble_override),
                        min_members=1)
+    return base
+
+
+def build_variant_config(spec: ExperimentSpec,
+                         variant_name: str) -> BotConfig:
+    """Reconstruct the exact BotConfig a named variant ran with — the
+    config that makes cached completions replay at $0 (cache keys include
+    model/temperature/prompt). Used by scripts/optimize_prompt.py."""
+    base = _base_config(spec)
+    for v in spec.variants:
+        if v["name"] == variant_name:
+            return replace(base, **v.get("patch", {}))
+    raise ValueError(f"variant {variant_name!r} not in spec "
+                     f"(have {[v['name'] for v in spec.variants]})")
+
+
+def _build_systems(spec: ExperimentSpec, store) -> dict:
+    """name -> ForecastSystem. Module-level so tests can monkeypatch it."""
+    install_historical_providers()
+    base = _base_config(spec)
     systems: dict = {}
     for v in spec.variants:
         system = CalibratedEnsembleAdapter.variant(base=base,
@@ -78,6 +97,13 @@ def _build_systems(spec: ExperimentSpec, store) -> dict:
             raise ValueError(f"unknown baseline: {b!r} "
                              f"(choose from {sorted(_BASELINE_FACTORIES)})")
         systems[b] = factory(store)
+    from backtest.systems.registry import build_extra_systems
+    extra = build_extra_systems(spec, store)
+    collisions = set(extra) & set(systems)
+    if collisions:
+        raise ValueError(f"system names collide with variants/baselines: "
+                         f"{sorted(collisions)}")
+    systems.update(extra)
     return systems
 
 
@@ -89,8 +115,10 @@ def _run_id(spec: ExperimentSpec, systems: dict) -> str:
 
 def _select_questions(spec: ExperimentSpec, store, profile) -> list:
     corpus = dict(spec.corpus)
+    # Query ALL matching questions (no SQL LIMIT) so the later seeded shuffle
+    # draws uniformly across all platforms, not just alphabetically-first qids.
     kwargs = {"resolved_only": corpus.get("resolved_only", True),
-              "limit": profile.max_questions}
+              "limit": None}
     for key in ("platforms", "qtypes", "open_after", "close_before",
                 "stratum", "model_set_hash"):
         if key in corpus:
@@ -102,7 +130,26 @@ def _select_questions(spec: ExperimentSpec, store, profile) -> list:
         from backtest.corpus.model_releases import model_set_hash
         kwargs["model_set_hash"] = model_set_hash(
             [m.model for m in BotConfig().ensemble])
-    return sorted(store.query(**kwargs), key=lambda q: q.qid)
+    qs = store.query(**kwargs)
+
+    # Filter to horizon-feasible questions only (at least one horizon in
+    # spec.horizons must map to a valid as-of datetime) so wasted "skipped"
+    # cells don't consume the cap.
+    qs = [q for q in qs
+          if any(horizon_to_asof(q, h) is not None for h in spec.horizons)]
+
+    # Deterministic seeded shuffle: same seed+corpus → same selection order.
+    import random
+    random.Random(spec.seed).shuffle(qs)
+
+    # Truncate to the tighter of profile.max_questions / corpus["limit"].
+    caps = [c for c in (profile.max_questions, corpus.get("limit")) if c]
+    cap = min(caps) if caps else None
+    if cap is not None:
+        qs = qs[:cap]
+
+    # Stable iteration order within the selected set.
+    return sorted(qs, key=lambda q: q.qid)
 
 
 def _write_manifest(path: Path, manifest: dict) -> None:
@@ -216,6 +263,17 @@ async def run_experiment(spec: ExperimentSpec, store, out_dir: Path, *,
                     statuses[key] = "skipped"
                     _write_manifest(manifest_path, manifest)
                     continue
+                # I4 — already-decided-at-T guard:
+                # Skip cells where the question resolved before the as_of
+                # point — forecasting an already-resolved question is not
+                # forecasting.  Corpus resolve times are currently NULL for
+                # most rows, so this guard is future-proofing (safe no-op when
+                # actual_resolve_time is None).
+                if (q.actual_resolve_time is not None
+                        and q.actual_resolve_time <= as_of):
+                    statuses[key] = "skipped"
+                    _write_manifest(manifest_path, manifest)
+                    continue
                 ctx = AsOfContext(as_of=as_of, cutoff_mode=spec.cutoff_mode,
                                   llm=llm, store=store)
                 try:
@@ -267,16 +325,9 @@ async def run_experiment(spec: ExperimentSpec, store, out_dir: Path, *,
 
 def _score_run(run_dir: Path, store, seed: int = 0,
                model_set_hash: str | None = None) -> None:
-    artifacts_path = run_dir / "artifacts.jsonl"
-    if not artifacts_path.exists():
+    latest = latest_artifacts(run_dir)
+    if not latest:
         return
-    latest: dict = {}
-    with artifacts_path.open() as f:
-        for line in f:
-            if not line.strip():
-                continue
-            a = artifact_from_dict(json.loads(line))
-            latest[(a.qid, a.horizon, a.system_name)] = a
 
     rows = []
     for (qid, horizon, variant), a in sorted(latest.items()):
@@ -302,7 +353,12 @@ def _score_run(run_dir: Path, store, seed: int = 0,
                    "baseline_score": baseline_score(a.forecast, q),
                    "brier": None, "h2h_cp": None, "h2h_market": None,
                    "stratum": stratum,
-                   "resolution": q.resolution}
+                   "resolution": q.resolution,
+                   # I4 — price provenance; I5 — platform dimension;
+                   # I7 — staleness timestamp
+                   "platform": q.platform if q is not None else None,
+                   "price_at_T": None,
+                   "price_at_T_ts": None}
         except Exception as e:
             logger.warning("scoring failed for %s/%s/%s: %s",
                            qid, horizon, variant, e)
@@ -320,11 +376,16 @@ def _score_run(run_dir: Path, store, seed: int = 0,
             logger.warning("h2h_cp failed for %s: %s", qid, e)
         try:
             mqid = market_for(store, qid)
-            price = (store.value_at(mqid, "market_price", a.as_of)
-                     if mqid else None)
-            if price is not None:
-                row["h2h_market"] = head_to_head(
-                    a.forecast, market_opponent(float(price)), q)
+            # I4 + I7: record price_at_T and its timestamp using value_at_with_ts
+            if mqid is not None:
+                price_result = store.value_at_with_ts(
+                    mqid, "market_price", a.as_of)
+                if price_result is not None:
+                    price, price_ts = price_result
+                    row["price_at_T"] = float(price)
+                    row["price_at_T_ts"] = price_ts
+                    row["h2h_market"] = head_to_head(
+                        a.forecast, market_opponent(float(price)), q)
         except Exception as e:
             logger.warning("h2h_market failed for %s: %s", qid, e)
         rows.append(row)

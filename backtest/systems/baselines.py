@@ -17,6 +17,10 @@ from backtest.timetravel.asof import AsOfContext
 
 logger = logging.getLogger(__name__)
 
+# canonical baseline system names (runner factories and the failure
+# taxonomy's default exclusion both key on this)
+BASELINE_NAMES = frozenset({"chance", "cp_echo", "market_echo"})
+
 
 def _artifact(q: BacktestQuestion, ctx: AsOfContext, name: str,
               fingerprint: str, fc: Forecast | None,

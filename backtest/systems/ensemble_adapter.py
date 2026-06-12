@@ -14,7 +14,11 @@ totals sum whatever StageRecords contain.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import os
+import tempfile
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -25,7 +29,7 @@ from backtest.core import (BacktestQuestion, Forecast, ForecastArtifact,
 from backtest.corpus.model_releases import model_set_hash
 from backtest.timetravel.asof import ACTIVE_CONTEXT, AsOfContext
 from bot import research as bot_research
-from bot.aggregation import aggregate_binary
+from bot.aggregation import aggregate_binary, extremize
 from bot.calibration import calibrate_binary, load_platt
 from bot.config import BotConfig, config_hash
 from bot.distributions import percentiles_to_cdf
@@ -38,6 +42,69 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ---------------------------------------------------------------------------
+# I3 — content-addressed research cache
+# ---------------------------------------------------------------------------
+
+# Providers whose output depends on BotConfig beyond the provider list —
+# their config knobs must salt the research cache key or variants A/B-ing
+# those knobs would silently share dossiers (guaranteed null result).
+_CFG_DEPENDENT_PROVIDERS = {"asknews_rated"}
+
+
+def _research_cache_key(qid: str, as_of: datetime,
+                        providers: list[str], cfg_salt: str = "") -> str:
+    """sha256(qid | as_of_iso | comma-joined-providers [| cfg_salt]).
+
+    Stable for any ordering: providers are sorted before joining so that
+    differently-ordered provider lists with the same members share a cache.
+    """
+    payload = f"{qid}|{as_of.isoformat()}|{','.join(sorted(providers))}"
+    if cfg_salt:
+        payload += f"|{cfg_salt}"
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _research_cfg_salt(cfg: BotConfig) -> str:
+    """Cache-key salt for config-dependent providers ("" otherwise)."""
+    if _CFG_DEPENDENT_PROVIDERS & set(cfg.research_providers):
+        return f"parser_model={cfg.parser_model}"
+    return ""
+
+
+def _research_cache_dir(llm_cache_dir: Path) -> Path:
+    """research_cache lives as a sibling of the LLM cache dir."""
+    return llm_cache_dir.parent / "research_cache"
+
+
+def _load_research_cache(cache_dir: Path, key: str):
+    """Return cached dict {"text": ..., "provider": ..., "providers": [...]}
+    or None on miss / corrupt entry."""
+    path = cache_dir / f"{key}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def _save_research_cache(cache_dir: Path, key: str, record: dict) -> None:
+    """Atomic write: tmp + os.replace, mirroring llm_cache."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / f"{key}.json"
+    tmp = path.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(record))
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _model_set_hash(cfg: BotConfig) -> str:
     """Delegate to the canonical corpus implementation so the adapter and
     the corpus stratifier always agree on the hash (model_set_hash is total
@@ -46,10 +113,17 @@ def _model_set_hash(cfg: BotConfig) -> str:
 
 
 def _question_dict(q: BacktestQuestion) -> dict:
+    # resolution_criteria falls back to description so that market-native
+    # questions (polymarket etc.) whose substance lives in description are
+    # seen by the research stage.
     return dict(question_text=q.title,
-                resolution_criteria=q.resolution_criteria,
+                resolution_criteria=q.resolution_criteria or q.description,
                 fine_print=q.fine_print,
-                qid=q.qid)
+                description=q.description,
+                qid=q.qid,
+                # Halawi-style research window start (providers may use it):
+                open_time_iso=(q.open_time.isoformat()
+                               if q.open_time else None))
 
 
 def _common_fields(q: BacktestQuestion) -> dict:
@@ -128,12 +202,14 @@ async def _forecast_binary(bot: _BacktestEnsembleBot, q: BacktestQuestion,
         stage="aggregation",
         inputs={"member_probs": list(r.member_probs),
                 "member_models": list(r.member_models),
-                "method": bot.cfg.aggregation_method},
+                "method": bot.cfg.aggregation_method,
+                "n_trim": bot.cfg.n_trim},
         outputs={"aggregate_raw": r.aggregate_raw, "spread": r.spread}))
     stages.append(StageRecord(
         stage="calibration",
         inputs={"aggregate_raw": r.aggregate_raw,
-                "cap_lo": bot.cfg.cap_lo, "cap_hi": bot.cfg.cap_hi},
+                "cap_lo": bot.cfg.cap_lo, "cap_hi": bot.cfg.cap_hi,
+                "extremize_a": bot.cfg.extremize_a},
         outputs={"final": r.final}))
     return Forecast(qtype=q.qtype, binary_prob=r.final)
 
@@ -271,14 +347,63 @@ class CalibratedEnsembleAdapter:
             run_cfg = replace(self.cfg, as_of=ctx.as_of)
             run_cfg = self._guard_calibration(run_cfg, stages)
             bot = _BacktestEnsembleBot(run_cfg, ctx, stages)
-            started = _now_iso()
-            res = await bot_research.run_research(_question_dict(q), run_cfg)
-            stages.append(StageRecord(
-                stage="research",
-                inputs={"providers": list(run_cfg.research_providers)},
-                outputs={"text": res.text, "provider": res.provider},
-                started_at=started, ended_at=_now_iso()))
-            fc = await self._dispatch(bot, q, res.text, stages)
+
+            # I3 — content-addressed research cache.
+            # Only cache when ctx.llm is set AND has a cache_dir attribute
+            # (CachedLLM provides this; stub LLMs in tests may not).
+            research_text: str | None = None
+            cached_provider: str | None = None
+            cache_hit = False
+            r_cache_dir = None
+            r_key = None
+            if ctx.llm is not None and hasattr(ctx.llm, "cache_dir"):
+                r_key = _research_cache_key(
+                    q.qid, ctx.as_of,
+                    list(run_cfg.research_providers),
+                    cfg_salt=_research_cfg_salt(run_cfg))
+                r_cache_dir = _research_cache_dir(ctx.llm.cache_dir)
+                cached = _load_research_cache(r_cache_dir, r_key)
+                if cached is not None:
+                    research_text = cached["text"]
+                    cached_provider = cached.get("provider", "cached")
+                    cache_hit = True
+
+            if cache_hit:
+                stages.append(StageRecord(
+                    stage="research",
+                    inputs={"providers": list(run_cfg.research_providers),
+                            "cache_key": r_key},
+                    outputs={"text": research_text,
+                             "provider": cached_provider,
+                             "cache_hit": True},
+                    started_at=_now_iso(), ended_at=_now_iso()))
+            else:
+                started = _now_iso()
+                res = await bot_research.run_research(_question_dict(q), run_cfg)
+                ended = _now_iso()
+                stages.append(StageRecord(
+                    stage="research",
+                    inputs={"providers": list(run_cfg.research_providers)},
+                    outputs={"text": res.text, "provider": res.provider},
+                    started_at=started, ended_at=ended))
+                research_text = res.text
+                if res.provider == "none":
+                    raise RuntimeError(
+                        "no research available; refusing LLM spend "
+                        "(all configured research providers returned nothing)")
+                # Persist to cache when cache_dir is available
+                if r_cache_dir is not None and r_key is not None:
+                    try:
+                        _save_research_cache(r_cache_dir, r_key, {
+                            "text": res.text,
+                            "provider": res.provider,
+                            "providers": list(run_cfg.research_providers),
+                        })
+                    except Exception as cache_err:
+                        logger.warning("research cache write failed: %s",
+                                       cache_err)
+
+            fc = await self._dispatch(bot, q, research_text, stages)
             return self._artifact(q, ctx, fc, stages)
         except Exception as e:
             logger.warning("forecast failed for %s: %s", q.qid, e)
@@ -329,20 +454,25 @@ class CalibratedEnsembleAdapter:
             run_cfg = self._guard_calibration(run_cfg, stages)
             probs = [float(p) for p in member_outputs]
             started = _now_iso()
-            raw = aggregate_binary(probs, run_cfg.aggregation_method)
+            raw = aggregate_binary(probs, run_cfg.aggregation_method,
+                                   n_trim=run_cfg.n_trim)
             stages.append(StageRecord(
                 stage="aggregation",
                 inputs={"member_probs": probs,
-                        "method": run_cfg.aggregation_method},
+                        "method": run_cfg.aggregation_method,
+                        "n_trim": run_cfg.n_trim},
                 outputs={"aggregate_raw": raw},
                 started_at=started, ended_at=_now_iso()))
+            pre_cal = (extremize(raw, run_cfg.extremize_a)
+                       if run_cfg.extremize_a != 1.0 else raw)
             platt = load_platt(Path(run_cfg.calibration_dir) / "binary.json")
-            final = calibrate_binary(raw, platt,
+            final = calibrate_binary(pre_cal, platt,
                                      run_cfg.cap_lo, run_cfg.cap_hi)
             stages.append(StageRecord(
                 stage="calibration",
                 inputs={"aggregate_raw": raw, "cap_lo": run_cfg.cap_lo,
-                        "cap_hi": run_cfg.cap_hi},
+                        "cap_hi": run_cfg.cap_hi,
+                        "extremize_a": run_cfg.extremize_a},
                 outputs={"final": final}))
             return self._artifact(q, ctx,
                                   Forecast(qtype=QType.BINARY,

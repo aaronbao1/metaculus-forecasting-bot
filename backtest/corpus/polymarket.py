@@ -101,13 +101,21 @@ async def _ingest_market(store: CorpusStore, m: dict,
             "fetched_at": datetime.now(timezone.utc).isoformat()}))
 
     if len(clob_ids) > yes_idx:            # snapshot-on-sight
-        hist = await _get_json(CLOB_PRICES, params={
-            "market": clob_ids[yes_idx], "fidelity": FIDELITY_MIN})
-        pts = [(datetime.fromtimestamp(h["t"], tz=timezone.utc).isoformat(),
-                float(h["p"]))
-               for h in (hist.get("history") or [])]
-        if pts:
-            store.put_series(qid, "market_price", pts)
+        # CLOB requires a time range: bare market+fidelity 400s (live-verified
+        # 2026-06-11); interval=max returns the full life of the market.
+        # A series failure must not cost the question — series are bonus.
+        try:
+            hist = await _get_json(CLOB_PRICES, params={
+                "market": clob_ids[yes_idx], "interval": "max",
+                "fidelity": FIDELITY_MIN})
+            pts = [(datetime.fromtimestamp(h["t"],
+                                           tz=timezone.utc).isoformat(),
+                    float(h["p"]))
+                   for h in (hist.get("history") or [])]
+            if pts:
+                store.put_series(qid, "market_price", pts)
+        except Exception as e:
+            report.errors.append(f"prices-history {qid}: {e}")
     report.fetched += 1
     return True
 

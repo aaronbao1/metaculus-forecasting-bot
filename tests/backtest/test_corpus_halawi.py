@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from backtest.corpus.halawi import import_halawi
 from backtest.corpus.store import CorpusStore
@@ -40,8 +40,9 @@ def test_import_halawi_jsonl(tmp_path):
     # dataset text stored verbatim (spec §3.2: text may drift from the
     # current Metaculus copy — provenance carries the origin platform)
     assert q.description == "Verbatim dataset background."
-    assert q.open_time == datetime.fromisoformat("2024-01-05")
-    assert q.actual_resolve_time == datetime.fromisoformat("2024-07-02")
+    # _from_iso normalises naive ISO strings to UTC (store convention)
+    assert q.open_time == datetime(2024, 1, 5, tzinfo=timezone.utc)
+    assert q.actual_resolve_time == datetime(2024, 7, 2, tzinfo=timezone.utc)
     assert q.provenance["source"] == "halawi"
     assert q.provenance["origin_platform"] == "metaculus"
 

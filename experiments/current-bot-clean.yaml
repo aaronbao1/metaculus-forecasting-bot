@@ -1,0 +1,22 @@
+# First real backtest of the CURRENT bot (full 3x3 ensemble, trimmed-GMO,
+# Platt-off-by-default) on the clean post-cutoff stratum, strict cutoffs,
+# T = one week before scheduled close. Baselines anchor the leaderboard.
+#
+# Budget: <=200 questions x 1 horizon x ~10 LLM calls — est ~$50, under the
+# standard profile's $150 actual-spend brake. AskNews archive calls cost
+# 5 credits each (~1000 credits for the run).
+name: current-bot-clean
+corpus:
+  stratum: clean
+  resolved_only: true
+  qtypes: [binary]
+  limit: 200
+horizons: [close-7d]
+cutoff_mode: strict
+profile: standard
+variants:
+  - name: current
+    patch:
+      research_providers: [asknews_historical, markets_historical]
+baselines: [chance, cp_echo, market_echo]
+seed: 0

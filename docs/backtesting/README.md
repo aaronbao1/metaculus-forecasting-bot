@@ -108,8 +108,22 @@ variants:                    # each entry patches BotConfig via adapter.variant(
   - {name: trimmed_gmo, patch: {aggregation_method: trimmed_gmo}}
   - {name: median,      patch: {aggregation_method: median}}
 baselines: [chance, cp_echo] # floors every report contextualizes against
+systems:                     # optional: registry-backed non-ensemble systems
+  - {name: ts_naive, kind: timeseries, params: {engine: naive_drift}}
 seed: 0
 ```
+
+`systems:` entries resolve through `backtest/systems/registry.py` (kind
+`timeseries` → `TimeSeriesSystem`, engines in
+`backtest/submodels/engines.py`: `naive_drift` always available; `theta`/
+`autoarima`/`autoets` via the `timeseries` extra; `chronos2`/`timesfm` via
+`tsfm`). They spend no LLM budget and forecast numeric/discrete questions
+that have a `kind="target"` series (see DATA.md) — build those with
+`build-corpus --source fred --series-ids CPIAUCSL`, the CSV importer
+(`backtest/corpus/series_csv.py`), and `synth-questions` (synthetic numeric
+questions from a stored series; Retrocast ext. 4). The `timeseries` research
+provider injects the same anchor as a dossier section; `asknews_rated`
+relevance-filters the AskNews dossier (GABRIEL-style, `bot/rating.py`).
 
 Horizon T anchors to `scheduled_close_time` (never actual resolve time —
 that leaks "resolves about now"), clamped to `open_time`; `spot` uses the
@@ -169,6 +183,15 @@ python scripts/check_regression.py --scores <run_dir>/scores.jsonl \
 ```
 
 and commit the updated baseline with the change that moved it.
+
+## Failure taxonomy and optimization
+
+`backtest failures <run-dir>` post-mortems a run's worst losses into a
+Clio-style clustered taxonomy (`failures.json` + `failures.md`; replay-only
+unless `--live`). Downstream: `scripts/playbook_update.py` turns facets into
+candidate playbook bullets, and `scripts/optimize_prompt.py` evolves the
+binary prompt against cached runs — promotion rules and the item-6
+evolutionary-search plug point live in `OPTIMIZE.md`.
 
 ## Calibration flywheel
 

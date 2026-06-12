@@ -18,9 +18,14 @@ from pathlib import Path as _Path
 _repo_root = str(_Path(__file__).resolve().parent.parent)
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
-del _Path, _repo_root
+del _repo_root
 import json
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(_Path(__file__).resolve().parent.parent / ".env")
+del _Path
 
 
 def cmd_build_corpus(args) -> int:
@@ -44,6 +49,12 @@ def cmd_build_corpus(args) -> int:
     elif args.source == "manifold":
         from backtest.corpus.manifold import fetch_manifold
         report = asyncio.run(fetch_manifold(store, limit=args.limit))
+    elif args.source == "fred":
+        from backtest.corpus.fred import fetch_fred
+        if not args.series_ids:
+            print("--series-ids is required for fred")
+            return 2
+        report = asyncio.run(fetch_fred(store, args.series_ids))
     elif args.source == "halawi":
         from backtest.corpus.halawi import import_halawi
         report = import_halawi(store, Path(args.dataset_dir))
@@ -74,6 +85,18 @@ def _cmd_run(args, live_llm: bool) -> int:
     done = sum(1 for s in result.statuses.values() if s == "done")
     print(f"[retrocast] {result.run_id}: {done}/{len(result.statuses)} "
           f"done -> {result.run_dir}")
+    return 0
+
+
+def cmd_synth_questions(args) -> int:
+    from backtest.corpus.store import CorpusStore
+    from backtest.corpus.synthetic import generate_questions
+    store = CorpusStore(Path(args.corpus))
+    qs = generate_questions(store, args.source_qid, n=args.n,
+                            horizon_days=args.horizon_days, seed=args.seed,
+                            name=args.name)
+    print(f"generated={len(qs)} (platform=synthetic, "
+          f"source={args.source_qid})")
     return 0
 
 
@@ -114,6 +137,30 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_failures(args) -> int:
+    import asyncio
+
+    from backtest.corpus.store import CorpusStore
+    from backtest.reports import failures as failures_mod
+    from backtest.timetravel.llm_cache import CachedLLM
+    from bot.config import BotConfig
+    run_dir = Path(args.run_dir)
+    if not run_dir.exists():
+        print(f"run dir not found: {run_dir}")
+        return 2
+    store = CorpusStore(Path(args.corpus))
+    # cache lives at out_dir level (run_dir's parent), shared across run_ids;
+    # replay-only by default so taxonomy rendering is $0 — pass --live to
+    # allow fresh facet/cluster calls
+    llm = CachedLLM(run_dir.parent / "llm_cache", live=args.live)
+    payload = asyncio.run(failures_mod.analyze_failures(
+        run_dir, store, llm, args.model or BotConfig().parser_model,
+        top=args.top, variant=args.variant))
+    print(f"failures: {payload['n_failures']} losses -> "
+          f"{len(payload['clusters'])} clusters; wrote failures.json/.md")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         prog="backtest",
@@ -125,13 +172,15 @@ def main(argv=None) -> int:
                         help="fetch/import questions into the corpus store")
     bc.add_argument("--source", required=True,
                     choices=["metaculus", "polymarket", "kalshi", "manifold",
-                             "halawi", "forecastbench"])
+                             "halawi", "forecastbench", "fred"])
     bc.add_argument("--corpus", default="data/backtest",
                     help="corpus root (default data/backtest)")
     bc.add_argument("--limit", type=int, default=None)
     bc.add_argument("--tournaments", nargs="*", default=None)
     bc.add_argument("--dataset-dir", default=None,
                     help="local dataset dir (halawi/forecastbench)")
+    bc.add_argument("--series-ids", nargs="*", default=None,
+                    help="FRED series ids (fred source), e.g. CPIAUCSL")
     bc.set_defaults(func=cmd_build_corpus)
 
     for name, live, help_text in (
@@ -153,6 +202,19 @@ def main(argv=None) -> int:
                                  "(CI smoke gate)")
         sp.set_defaults(func=lambda a, _live=live: _cmd_run(a, _live))
 
+    sq = sub.add_parser("synth-questions",
+                        help="generate synthetic numeric questions from a "
+                             "stored target series (Retrocast ext. 4)")
+    sq.add_argument("--corpus", default="data/backtest")
+    sq.add_argument("--source-qid", required=True,
+                    help="qid holding the kind='target' series")
+    sq.add_argument("--n", type=int, default=20)
+    sq.add_argument("--horizon-days", type=float, default=30.0)
+    sq.add_argument("--seed", type=int, default=0)
+    sq.add_argument("--name", default=None,
+                    help="human-readable series name for question titles")
+    sq.set_defaults(func=cmd_synth_questions)
+
     cp = sub.add_parser("compare",
                         help="paired stats between two variants of one run")
     cp.add_argument("run_dir")
@@ -164,6 +226,20 @@ def main(argv=None) -> int:
                         help="render the markdown report for a run dir")
     rp.add_argument("run_dir")
     rp.set_defaults(func=cmd_report)
+
+    fl = sub.add_parser("failures",
+                        help="Clio-style failure taxonomy over a run's "
+                             "worst losses (failures.json + failures.md)")
+    fl.add_argument("run_dir")
+    fl.add_argument("--corpus", default="data/backtest")
+    fl.add_argument("--top", type=int, default=25)
+    fl.add_argument("--variant", default=None,
+                    help="restrict to one variant's losses")
+    fl.add_argument("--model", default=None,
+                    help="facet/cluster model (default: parser_model)")
+    fl.add_argument("--live", action="store_true",
+                    help="allow fresh LLM calls (default: replay-only)")
+    fl.set_defaults(func=cmd_failures)
 
     args = p.parse_args(argv)
     return args.func(args)

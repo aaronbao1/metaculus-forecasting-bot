@@ -80,7 +80,11 @@ def _iso(dt: datetime | None) -> str | None:
 
 
 def _from_iso(s: str | None) -> datetime | None:
-    return datetime.fromisoformat(s) if s else None
+    if not s:
+        return None
+    dt = datetime.fromisoformat(s)
+    # Store convention: naive ISO strings are always UTC (old corpus rows).
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
 def _safe(qid: str) -> str:
@@ -206,6 +210,33 @@ class CorpusStore:
             (qid, kind, str(path.relative_to(self.root)), len(pts)))
         self.conn.commit()
 
+    def series_points(self, qid: str, kind: str,
+                      until: datetime | None = None) -> list[tuple[str, object]]:
+        """Full series read: [(iso_ts, value)] sorted ascending, optionally
+        filtered to points with ts <= until (inclusive — submodels train on
+        everything observable at T). Missing series -> [] (value_at's
+        fail-loud-on-missing-blob convention applies only to indexed rows)."""
+        row = self.conn.execute(
+            "SELECT blob_path FROM series WHERE qid = ? AND kind = ?",
+            (qid, kind)).fetchone()
+        if row is None:
+            return []
+        pts = json.loads((self.root / row["blob_path"]).read_text())
+        if until is None:
+            return [(str(ts), v) for ts, v in pts]
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        out = []
+        for ts, v in pts:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt <= until:
+                out.append((str(ts), v))
+            else:
+                break
+        return out
+
     def value_at(self, qid: str, kind: str, t: datetime) -> object | None:
         """Step-function lookup: last point with ts <= t, else None."""
         row = self.conn.execute(
@@ -228,6 +259,38 @@ class CorpusStore:
             else:
                 break
         return best
+
+    def value_at_with_ts(self, qid: str, kind: str,
+                         t: datetime) -> tuple[object, str] | None:
+        """Step-function lookup returning (value, iso_ts) for the matched point.
+
+        Same logic as value_at(), but also returns the ISO-8601 timestamp of
+        the matched series point so callers can assess price staleness.
+        Returns None (not a tuple) when no matching point exists.
+        value_at() is left untouched for compatibility.
+        """
+        row = self.conn.execute(
+            "SELECT blob_path FROM series WHERE qid = ? AND kind = ?",
+            (qid, kind)).fetchone()
+        if row is None:
+            return None
+        pts = json.loads((self.root / row["blob_path"]).read_text())
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        best_value = None
+        best_ts: str | None = None
+        for ts, value in pts:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt <= t:
+                best_value = value
+                best_ts = str(ts)
+            else:
+                break
+        if best_ts is None:
+            return None
+        return best_value, best_ts
 
     # ------------------------------------------------------------------
     # Contamination strata

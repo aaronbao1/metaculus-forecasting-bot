@@ -52,15 +52,24 @@ class CachedLLM:
         return completion
 
     async def _call_live(self, model: str, prompt: str, temperature: float):
-        """Single live seam (monkeypatch target in tests). Token/cost figures
-        are recorded when the response object carries them, else zeros."""
-        from forecasting_tools import GeneralLlm
+        """Single live seam (monkeypatch target in tests).
+
+        Cost is captured via MonetaryCostManager (litellm callback) rather
+        than by inspecting the response object.  GeneralLlm.invoke() returns a
+        plain str, so getattr(resp, 'cost', ...) always returns 0; the
+        MonetaryCostManager context records what litellm's internal callback
+        actually tracked.  Cost is a lower bound — litellm may not price all
+        model slugs (unknown slugs produce cost_usd=0 with a warning in logs).
+        Token counts remain 0 for the same reason; they are not used by the
+        spend-brake and are included for forward-compatibility only.
+        """
+        from forecasting_tools import GeneralLlm, MonetaryCostManager
         llm = GeneralLlm(model=f"openrouter/{model}", temperature=temperature,
                          timeout=900)
-        resp = await llm.invoke(prompt)
+        with MonetaryCostManager() as cost_mgr:
+            resp = await llm.invoke(prompt)
         completion = resp if isinstance(resp, str) else str(resp)
-        usage = getattr(resp, "usage", None)
-        tokens_in = int(getattr(usage, "prompt_tokens", 0) or 0)
-        tokens_out = int(getattr(usage, "completion_tokens", 0) or 0)
-        cost_usd = float(getattr(resp, "cost", 0.0) or 0.0)
-        return completion, tokens_in, tokens_out, cost_usd
+        cost_usd = float(cost_mgr.current_usage or 0.0)
+        # Tokens are not reliably extractable from a plain-str response;
+        # record 0 and let the cost figure carry the spend signal.
+        return completion, 0, 0, cost_usd
