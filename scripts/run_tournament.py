@@ -54,7 +54,8 @@ def post_run_snapshot(records: list[dict],
         logger.exception("post-run snapshot failed (tournament run unaffected)")
 
 
-async def main():
+async def main() -> list[dict]:
+    """Run the tournament and return only the records appended by this run."""
     from forecasting_tools import MetaculusApi
     n_before = len(read_forecasts(DEFAULT_CONFIG.log_path))
     bot = build_framework_bot(DEFAULT_CONFIG)
@@ -68,8 +69,9 @@ async def main():
         for e in errors:
             print(f"  ERROR: {e}")
     # Only the records appended by THIS run (the log is append-only).
-    post_run_snapshot(read_forecasts(DEFAULT_CONFIG.log_path)[n_before:])
+    return read_forecasts(DEFAULT_CONFIG.log_path)[n_before:]
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    new_records = asyncio.run(main())
+    post_run_snapshot(new_records)
