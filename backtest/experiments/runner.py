@@ -237,6 +237,17 @@ async def run_experiment(spec: ExperimentSpec, store, out_dir: Path, *,
                     statuses[key] = "skipped"
                     _write_manifest(manifest_path, manifest)
                     continue
+                # I4 — already-decided-at-T guard:
+                # Skip cells where the question resolved before the as_of
+                # point — forecasting an already-resolved question is not
+                # forecasting.  Corpus resolve times are currently NULL for
+                # most rows, so this guard is future-proofing (safe no-op when
+                # actual_resolve_time is None).
+                if (q.actual_resolve_time is not None
+                        and q.actual_resolve_time <= as_of):
+                    statuses[key] = "skipped"
+                    _write_manifest(manifest_path, manifest)
+                    continue
                 ctx = AsOfContext(as_of=as_of, cutoff_mode=spec.cutoff_mode,
                                   llm=llm, store=store)
                 try:
@@ -323,7 +334,12 @@ def _score_run(run_dir: Path, store, seed: int = 0,
                    "baseline_score": baseline_score(a.forecast, q),
                    "brier": None, "h2h_cp": None, "h2h_market": None,
                    "stratum": stratum,
-                   "resolution": q.resolution}
+                   "resolution": q.resolution,
+                   # I4 — price provenance; I5 — platform dimension;
+                   # I7 — staleness timestamp
+                   "platform": q.platform if q is not None else None,
+                   "price_at_T": None,
+                   "price_at_T_ts": None}
         except Exception as e:
             logger.warning("scoring failed for %s/%s/%s: %s",
                            qid, horizon, variant, e)
@@ -341,11 +357,16 @@ def _score_run(run_dir: Path, store, seed: int = 0,
             logger.warning("h2h_cp failed for %s: %s", qid, e)
         try:
             mqid = market_for(store, qid)
-            price = (store.value_at(mqid, "market_price", a.as_of)
-                     if mqid else None)
-            if price is not None:
-                row["h2h_market"] = head_to_head(
-                    a.forecast, market_opponent(float(price)), q)
+            # I4 + I7: record price_at_T and its timestamp using value_at_with_ts
+            if mqid is not None:
+                price_result = store.value_at_with_ts(
+                    mqid, "market_price", a.as_of)
+                if price_result is not None:
+                    price, price_ts = price_result
+                    row["price_at_T"] = float(price)
+                    row["price_at_T_ts"] = price_ts
+                    row["h2h_market"] = head_to_head(
+                        a.forecast, market_opponent(float(price)), q)
         except Exception as e:
             logger.warning("h2h_market failed for %s: %s", qid, e)
         rows.append(row)

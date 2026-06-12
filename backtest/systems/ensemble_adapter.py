@@ -14,7 +14,11 @@ totals sum whatever StageRecords contain.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import os
+import tempfile
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -36,6 +40,54 @@ logger = logging.getLogger(__name__)
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# I3 — content-addressed research cache
+# ---------------------------------------------------------------------------
+
+def _research_cache_key(qid: str, as_of: datetime,
+                        providers: list[str]) -> str:
+    """sha256(qid | as_of_iso | comma-joined-providers).
+
+    Stable for any ordering: providers are sorted before joining so that
+    differently-ordered provider lists with the same members share a cache.
+    """
+    payload = f"{qid}|{as_of.isoformat()}|{','.join(sorted(providers))}"
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _research_cache_dir(llm_cache_dir: Path) -> Path:
+    """research_cache lives as a sibling of the LLM cache dir."""
+    return llm_cache_dir.parent / "research_cache"
+
+
+def _load_research_cache(cache_dir: Path, key: str):
+    """Return cached dict {"text": ..., "provider": ..., "providers": [...]}
+    or None on miss / corrupt entry."""
+    path = cache_dir / f"{key}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def _save_research_cache(cache_dir: Path, key: str, record: dict) -> None:
+    """Atomic write: tmp + os.replace, mirroring llm_cache."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / f"{key}.json"
+    tmp = path.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(record))
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _model_set_hash(cfg: BotConfig) -> str:
@@ -275,18 +327,62 @@ class CalibratedEnsembleAdapter:
             run_cfg = replace(self.cfg, as_of=ctx.as_of)
             run_cfg = self._guard_calibration(run_cfg, stages)
             bot = _BacktestEnsembleBot(run_cfg, ctx, stages)
-            started = _now_iso()
-            res = await bot_research.run_research(_question_dict(q), run_cfg)
-            stages.append(StageRecord(
-                stage="research",
-                inputs={"providers": list(run_cfg.research_providers)},
-                outputs={"text": res.text, "provider": res.provider},
-                started_at=started, ended_at=_now_iso()))
-            if res.provider == "none":
-                raise RuntimeError(
-                    "no research available; refusing LLM spend "
-                    "(all configured research providers returned nothing)")
-            fc = await self._dispatch(bot, q, res.text, stages)
+
+            # I3 — content-addressed research cache.
+            # Only cache when ctx.llm is set AND has a cache_dir attribute
+            # (CachedLLM provides this; stub LLMs in tests may not).
+            research_text: str | None = None
+            cached_provider: str | None = None
+            cache_hit = False
+            r_cache_dir = None
+            r_key = None
+            if ctx.llm is not None and hasattr(ctx.llm, "cache_dir"):
+                r_key = _research_cache_key(
+                    q.qid, ctx.as_of,
+                    list(run_cfg.research_providers))
+                r_cache_dir = _research_cache_dir(ctx.llm.cache_dir)
+                cached = _load_research_cache(r_cache_dir, r_key)
+                if cached is not None:
+                    research_text = cached["text"]
+                    cached_provider = cached.get("provider", "cached")
+                    cache_hit = True
+
+            if cache_hit:
+                stages.append(StageRecord(
+                    stage="research",
+                    inputs={"providers": list(run_cfg.research_providers),
+                            "cache_key": r_key},
+                    outputs={"text": research_text,
+                             "provider": cached_provider,
+                             "cache_hit": True},
+                    started_at=_now_iso(), ended_at=_now_iso()))
+            else:
+                started = _now_iso()
+                res = await bot_research.run_research(_question_dict(q), run_cfg)
+                ended = _now_iso()
+                stages.append(StageRecord(
+                    stage="research",
+                    inputs={"providers": list(run_cfg.research_providers)},
+                    outputs={"text": res.text, "provider": res.provider},
+                    started_at=started, ended_at=ended))
+                research_text = res.text
+                if res.provider == "none":
+                    raise RuntimeError(
+                        "no research available; refusing LLM spend "
+                        "(all configured research providers returned nothing)")
+                # Persist to cache when cache_dir is available
+                if r_cache_dir is not None and r_key is not None:
+                    try:
+                        _save_research_cache(r_cache_dir, r_key, {
+                            "text": res.text,
+                            "provider": res.provider,
+                            "providers": list(run_cfg.research_providers),
+                        })
+                    except Exception as cache_err:
+                        logger.warning("research cache write failed: %s",
+                                       cache_err)
+
+            fc = await self._dispatch(bot, q, research_text, stages)
             return self._artifact(q, ctx, fc, stages)
         except Exception as e:
             logger.warning("forecast failed for %s: %s", q.qid, e)

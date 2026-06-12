@@ -233,6 +233,38 @@ class CorpusStore:
                 break
         return best
 
+    def value_at_with_ts(self, qid: str, kind: str,
+                         t: datetime) -> tuple[object, str] | None:
+        """Step-function lookup returning (value, iso_ts) for the matched point.
+
+        Same logic as value_at(), but also returns the ISO-8601 timestamp of
+        the matched series point so callers can assess price staleness.
+        Returns None (not a tuple) when no matching point exists.
+        value_at() is left untouched for compatibility.
+        """
+        row = self.conn.execute(
+            "SELECT blob_path FROM series WHERE qid = ? AND kind = ?",
+            (qid, kind)).fetchone()
+        if row is None:
+            return None
+        pts = json.loads((self.root / row["blob_path"]).read_text())
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        best_value = None
+        best_ts: str | None = None
+        for ts, value in pts:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt <= t:
+                best_value = value
+                best_ts = str(ts)
+            else:
+                break
+        if best_ts is None:
+            return None
+        return best_value, best_ts
+
     # ------------------------------------------------------------------
     # Contamination strata
     # ------------------------------------------------------------------

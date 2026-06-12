@@ -92,7 +92,8 @@ async def test_full_run_writes_manifest_artifacts_scores(
     assert len(rows) == 2
     assert set(rows[0]) == {"qid", "horizon", "variant", "log_score",
                             "baseline_score", "brier", "h2h_cp",
-                            "h2h_market", "stratum", "resolution"}
+                            "h2h_market", "stratum", "resolution",
+                            "platform", "price_at_T", "price_at_T_ts"}
     by_qid = {r["qid"]: r for r in rows}
     assert by_qid["metaculus:1"]["h2h_cp"] is not None   # CP series present
     assert by_qid["metaculus:2"]["h2h_cp"] is None

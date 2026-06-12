@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from backtest.core import artifact_from_dict
@@ -64,8 +65,8 @@ def build_report(run_dir: Path) -> Path:
     # ---- Leaderboard (ranked by mean baseline score) ----
     lines += ["## Leaderboard", "",
               "| variant | n | mean baseline | mean log | "
-              "h2h vs CP (mean [95% CI]) |",
-              "|---|---|---|---|---|"]
+              "h2h vs CP (mean [95% CI]) | h2h vs market (mean [95% CI]) |",
+              "|---|---|---|---|---|---|"]
     ranked = sorted(
         by_variant.items(),
         key=lambda kv: -(_mean([r["baseline_score"] for r in kv[1]])
@@ -78,10 +79,19 @@ def build_report(run_dir: Path) -> Path:
                         f"{bs['hi']:+.2f}] (n={len(h2h)})")
         else:
             h2h_cell = "—"
+        # I5 — h2h vs market column (mirroring h2h_cp rendering)
+        h2h_mkt = [r["h2h_market"] for r in rows if r.get("h2h_market") is not None]
+        if h2h_mkt:
+            bs_m = paired_bootstrap(h2h_mkt)
+            h2h_mkt_cell = (f"{bs_m['mean']:+.2f} [{bs_m['lo']:+.2f}, "
+                            f"{bs_m['hi']:+.2f}] (n={len(h2h_mkt)})")
+        else:
+            h2h_mkt_cell = "—"
         lines.append(
             f"| {variant} | {len(rows)} | "
             f"{_fmt(_mean([r['baseline_score'] for r in rows]))} | "
-            f"{_fmt(_mean([r['log_score'] for r in rows]))} | {h2h_cell} |")
+            f"{_fmt(_mean([r['log_score'] for r in rows]))} | "
+            f"{h2h_cell} | {h2h_mkt_cell} |")
 
     # ---- Contamination strata ----
     lines += ["", "## Mean baseline score by contamination stratum", "",
@@ -92,6 +102,63 @@ def build_report(run_dir: Path) -> Path:
     for (variant, stratum), vals in sorted(strata.items()):
         lines.append(f"| {variant} | {stratum} | {len(vals)} | "
                      f"{_fmt(_mean(vals))} |")
+
+    # ---- I5 — By platform ----
+    lines += ["", "## By platform", "",
+              "| variant | platform | n | mean baseline |",
+              "|---|---|---|---|"]
+    by_platform: dict = defaultdict(list)
+    for r in scores:
+        platform = r.get("platform") or "unknown"
+        by_platform[(r["variant"], platform)].append(r["baseline_score"])
+    for (variant, platform), vals in sorted(by_platform.items()):
+        lines.append(f"| {variant} | {platform} | {len(vals)} | "
+                     f"{_fmt(_mean(vals))} |")
+    lines.append("")
+    lines.append("_Note: manifold uses play-money; h2h vs market scores "
+                 "against manifold prices are indicative only._")
+
+    # ---- I7 — stale price summary ----
+    _STALE_DAYS = 7
+    stale_rows = []
+    for r in scores:
+        price_ts = r.get("price_at_T_ts")
+        if r.get("price_at_T") is not None and price_ts is not None:
+            try:
+                # Reconstruct the as_of from the artifact horizon/as_of;
+                # scores.jsonl doesn't carry as_of, so we approximate from
+                # the price_at_T_ts and the score row.  A simpler proxy:
+                # look for the matching artifact to get as_of.
+                # For performance, we do a single-pass lookup using artifacts.
+                pass  # deferred to the artifact join below
+            except Exception:
+                pass
+
+    # Build price staleness from artifacts (carry as_of for each row's qid+horizon+variant).
+    art_map = {(a.qid, a.horizon, a.system_name): a for a in artifacts}
+    stale_count = 0
+    for r in scores:
+        price_ts = r.get("price_at_T_ts")
+        if r.get("price_at_T") is None or price_ts is None:
+            continue
+        art = art_map.get((r["qid"], r["horizon"], r["variant"]))
+        if art is None:
+            continue
+        try:
+            pts_dt = datetime.fromisoformat(
+                str(price_ts).replace("Z", "+00:00"))
+            if pts_dt.tzinfo is None:
+                pts_dt = pts_dt.replace(tzinfo=timezone.utc)
+            as_of = art.as_of
+            if as_of.tzinfo is None:
+                as_of = as_of.replace(tzinfo=timezone.utc)
+            if (as_of - pts_dt).total_seconds() > _STALE_DAYS * 86400:
+                stale_count += 1
+        except Exception:
+            pass
+
+    lines += ["", f"## Price staleness",
+              f"Stale price (>7d before T): {stale_count} rows"]
 
     # ---- Diagnostics (binary) ----
     lines += ["", "## Diagnostics", ""]
