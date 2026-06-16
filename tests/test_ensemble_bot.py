@@ -82,3 +82,26 @@ async def test_numeric_pipeline_medians_percentiles(monkeypatch):
     assert result.median_percentiles[50.0] == 40
     assert 2.5 in result.median_percentiles
     assert 97.5 in result.median_percentiles
+
+
+CANNED_DATE = """reasoning...
+Percentile 2.5: 2026-02-01
+Percentile 10: 2026-03-01
+Percentile 25: 2026-04-01
+Percentile 50: 2026-06-01
+Percentile 75: 2026-08-01
+Percentile 90: 2026-10-01
+Percentile 97.5: 2026-12-01"""
+
+
+async def test_date_pipeline_medians_timestamps(monkeypatch):
+    from datetime import datetime, timezone
+    bot = make_bot(monkeypatch, CANNED_DATE)
+    result = await bot.run_date_ensemble(
+        **COMMON, lower_bound_message="not before 2026-01-01",
+        upper_bound_message="not after 2027-01-01")
+    assert result.median_percentiles[50.0] == \
+        datetime(2026, 6, 1, tzinfo=timezone.utc).timestamp()
+    assert 2.5 in result.median_percentiles
+    assert 97.5 in result.median_percentiles
+    assert len(result.member_models) == 6

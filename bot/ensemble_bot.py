@@ -20,9 +20,10 @@ from bot.aggregation import (aggregate_binary, aggregate_multiple_choice,
 from bot.calibration import calibrate_binary, load_platt
 from bot.config import BotConfig, DEFAULT_CONFIG, config_hash
 from bot.logging_store import append_forecast
-from bot.parsing import (ParseError, parse_binary, parse_multiple_choice,
-                         parse_percentiles)
-from bot.prompts import BINARY_PROMPT, MC_PROMPT, NUMERIC_PROMPT
+from bot.parsing import (ParseError, parse_binary, parse_date_percentiles,
+                         parse_multiple_choice, parse_percentiles,
+                         to_utc_timestamp)
+from bot.prompts import BINARY_PROMPT, DATE_PROMPT, MC_PROMPT, NUMERIC_PROMPT
 from bot.research import run_research
 from bot.timeutils import days_until
 
@@ -90,7 +91,7 @@ class CalibratedEnsembleBot:
         if override:
             return override
         return {"binary": BINARY_PROMPT, "mc": MC_PROMPT,
-                "numeric": NUMERIC_PROMPT}[qtype]
+                "numeric": NUMERIC_PROMPT, "date": DATE_PROMPT}[qtype]
 
     def _playbook_section(self) -> str:
         """Playbook block, or "" — in which case rendered prompts are
@@ -211,6 +212,27 @@ class CalibratedEnsembleBot:
                                      member_percentile_dicts=dicts,
                                      member_models=kept)
 
+    async def run_date_ensemble(self, *, question_text, background_info,
+                                resolution_criteria, fine_print, research,
+                                close_iso, lower_bound_message,
+                                upper_bound_message) -> NumericEnsembleResult:
+        prompt = self._template("date").format(
+            question_text=question_text, background_info=background_info,
+            resolution_criteria=resolution_criteria, fine_print=fine_print,
+            research=research, playbook_section=self._playbook_section(),
+            today=(self.cfg.as_of.date() if self.cfg.as_of
+                   else date.today()).isoformat(),
+            close_date=str(close_iso)[:10],
+            days_remaining=_days_remaining(close_iso, now=self.cfg.as_of),
+            lower_bound_message=lower_bound_message,
+            upper_bound_message=upper_bound_message)
+        texts, models = await self._fan_out(prompt)
+        dicts, kept = self._parse_survivors(texts, models, parse_date_percentiles)
+        median_pcts = _median_per_percentile(dicts)
+        return NumericEnsembleResult(median_percentiles=median_pcts,
+                                     member_percentile_dicts=dicts,
+                                     member_models=kept)
+
 
 _pchip_distribution_class = None
 
@@ -271,7 +293,7 @@ def build_framework_bot(cfg: BotConfig | None = None):
     """Factory returning a forecasting_tools.ForecastBot subclass instance
     wrapping CalibratedEnsembleBot. Inside a factory so importing this module
     never requires forecasting-tools at test time."""
-    from forecasting_tools import (BinaryQuestion, ForecastBot,
+    from forecasting_tools import (BinaryQuestion, DateQuestion, ForecastBot,
                                    MultipleChoiceQuestion, NumericQuestion,
                                    PredictedOptionList, ReasonedPrediction)
     from forecasting_tools.data_models.multiple_choice_report import \
@@ -396,6 +418,39 @@ def build_framework_bot(cfg: BotConfig | None = None):
             return ReasonedPrediction(
                 prediction_value=dist,
                 reasoning=f"median percentiles across "
+                          f"{len(r.member_percentile_dicts)} members: "
+                          f"{r.median_percentiles}")
+
+        async def _run_forecast_on_date(
+                self, question: DateQuestion, research: str
+        ) -> ReasonedPrediction:
+            lo = to_utc_timestamp(question.lower_bound)
+            hi = to_utc_timestamp(question.upper_bound)
+            lo_msg = (f"The outcome can not be earlier than {question.lower_bound}."
+                      if not question.open_lower_bound else
+                      f"The outcome is likely not earlier than {question.lower_bound}.")
+            hi_msg = (f"The outcome can not be later than {question.upper_bound}."
+                      if not question.open_upper_bound else
+                      f"The outcome is likely not later than {question.upper_bound}.")
+            r = await engine.run_date_ensemble(
+                research=research, lower_bound_message=lo_msg,
+                upper_bound_message=hi_msg, **_common_fields(question))
+            _log(question, "date", r.median_percentiles,
+                 r.member_percentile_dicts, r.member_models)
+            dist = PchipNumericDistribution(
+                declared_percentiles=[
+                    Percentile(percentile=pct / 100.0, value=val)
+                    for pct, val in sorted(r.median_percentiles.items())],
+                open_lower_bound=question.open_lower_bound,
+                open_upper_bound=question.open_upper_bound,
+                lower_bound=lo, upper_bound=hi,
+                zero_point=question.zero_point,
+                cdf_size=question.cdf_size,
+                is_date=True)   # date forecasts render percentiles as dates,
+                                # not raw timestamps, in published comments
+            return ReasonedPrediction(
+                prediction_value=dist,
+                reasoning=f"median date percentiles (unix ts) across "
                           f"{len(r.member_percentile_dicts)} members: "
                           f"{r.median_percentiles}")
 

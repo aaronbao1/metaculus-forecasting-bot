@@ -125,3 +125,57 @@ async def test_cost_brake_slices_question_list(adapter, monkeypatch):
     qs = [BinaryQuestion(question_text=f"Q{i}?") for i in range(5)]
     await bot.forecast_questions(qs)
     assert captured["n"] == 2
+
+
+async def test_date_handler_returns_valid_timestamp_distribution(
+        monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+
+    import numpy as np
+    from forecasting_tools import DateQuestion
+
+    from bot.distributions import validate_cdf
+
+    cfg = BotConfig(ensemble=[EnsembleMember("fake/model-a", runs=3),
+                              EnsembleMember("fake/model-b", runs=3)],
+                    log_path=str(tmp_path / "forecasts.jsonl"))
+    canned = ("reasoning...\n"
+              "Percentile 2.5: 2026-02-01\nPercentile 10: 2026-03-01\n"
+              "Percentile 25: 2026-04-01\nPercentile 50: 2026-06-01\n"
+              "Percentile 75: 2026-08-01\nPercentile 90: 2026-10-01\n"
+              "Percentile 97.5: 2026-12-01")
+
+    async def fake_invoke(self, member_and_prompt):
+        return canned
+
+    async def fake_run_research(question, cfg_):
+        return ResearchResult(text="stub", provider="asknews",
+                              providers=("asknews",))
+
+    monkeypatch.setattr(CalibratedEnsembleBot, "_invoke_model", fake_invoke,
+                        raising=True)
+    import bot.ensemble_bot as eb
+    monkeypatch.setattr(eb, "run_research", fake_run_research)
+
+    bot = build_framework_bot(cfg)
+    q = DateQuestion(
+        question_text="When?", id_of_post=7, background_info="",
+        resolution_criteria="", fine_print="",
+        lower_bound=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        upper_bound=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        open_lower_bound=False, open_upper_bound=False)
+    research = await bot.run_research(q)
+    pred = await bot._run_forecast_on_date(q, research)
+
+    # is_date drives date-formatted (not raw-timestamp) published comments
+    assert pred.prediction_value.is_date is True
+    cdf = pred.prediction_value.get_cdf()
+    assert len(cdf) == 201
+    validate_cdf(np.array([p.percentile for p in cdf]),
+                 open_lower=False, open_upper=False)
+    lo = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+    hi = datetime(2027, 1, 1, tzinfo=timezone.utc).timestamp()
+    assert cdf[0].value == pytest.approx(lo)
+    assert cdf[-1].value == pytest.approx(hi)
+    rows = read_forecasts(cfg.log_path)
+    assert rows[-1]["type"] == "date"

@@ -1,6 +1,9 @@
+from datetime import datetime, timezone
+
 import pytest
 
-from bot.parsing import ParseError, parse_binary, parse_multiple_choice, parse_percentiles
+from bot.parsing import (ParseError, parse_binary, parse_date_percentiles,
+                         parse_multiple_choice, parse_percentiles)
 
 
 def test_parse_binary_takes_last_match_and_scales():
@@ -48,4 +51,64 @@ Percentile 97.5: 10,000"""
 def test_parse_percentiles_raises_when_too_few():
     with pytest.raises(ParseError):
         parse_percentiles("Percentile 50: 10")
+
+
+def test_parse_date_percentiles_returns_utc_timestamps():
+    text = """reasoning...
+Percentile 2.5: 2026-02-01
+Percentile 10: 2026-03-01
+Percentile 25: 2026-04-01
+Percentile 50: 2026-06-01
+Percentile 75: 2026-08-01
+Percentile 90: 2026-10-01
+Percentile 97.5: 2026-12-01"""
+    out = parse_date_percentiles(text)
+    assert len(out) == 7
+    assert out[50.0] == datetime(2026, 6, 1, tzinfo=timezone.utc).timestamp()
+    assert out[2.5] < out[50.0] < out[97.5]
+
+
+def test_parse_date_percentiles_handles_iso_hour_with_z():
+    text = ("Percentile 10: 2026-01-01T06:00:00Z\n"
+            "Percentile 25: 2026-01-02\nPercentile 50: 2026-01-03\n"
+            "Percentile 75: 2026-01-04\nPercentile 90: 2026-01-05")
+    out = parse_date_percentiles(text)
+    assert out[10.0] == datetime(2026, 1, 1, 6, 0, 0,
+                                 tzinfo=timezone.utc).timestamp()
+
+
+def test_parse_date_percentiles_later_line_overwrites():
+    text = ("Percentile 50: 2026-01-01\nPercentile 10: 2026-01-02\n"
+            "Percentile 25: 2026-01-03\nPercentile 75: 2026-01-04\n"
+            "Percentile 90: 2026-01-05\nPercentile 50: 2026-07-07")
+    out = parse_date_percentiles(text)
+    assert out[50.0] == datetime(2026, 7, 7, tzinfo=timezone.utc).timestamp()
+
+
+def test_parse_date_percentiles_raises_when_too_few():
+    with pytest.raises(ParseError):
+        parse_date_percentiles("Percentile 50: 2026-01-01")
+
+
+def test_parse_date_percentiles_raises_on_unparseable_date():
+    text = ("Percentile 2.5: 2026-13-99\nPercentile 10: 2026-03-01\n"
+            "Percentile 25: 2026-04-01\nPercentile 50: 2026-06-01\n"
+            "Percentile 75: 2026-08-01\nPercentile 90: 2026-10-01")
+    with pytest.raises(ParseError):
+        parse_date_percentiles(text)
+
+
+def test_parse_date_percentiles_is_timezone_independent(monkeypatch):
+    import time
+    text = "\n".join(f"Percentile {p}: 2026-01-01"
+                     for p in (2.5, 10, 25, 50, 75, 90, 97.5))
+    expected = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        out = parse_date_percentiles(text)
+    finally:
+        monkeypatch.delenv("TZ", raising=False)
+        time.tzset()
+    assert out[50.0] == expected
 

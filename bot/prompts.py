@@ -97,6 +97,36 @@ Percentile 90: XX
 Percentile 97.5: XX
 """)
 
+DATE_PROMPT = (_HEADER + """{lower_bound_message}
+{upper_bound_message}
+
+Work through these steps, writing each out briefly:
+
+1. RESTATE: what exact event the resolution criteria track, and the date by
+   which it would be known. Express everything as calendar dates.
+2. TIME TO KNOW: when will the outcome actually be settled?
+3. STATUS QUO / TREND: the resolution date if nothing changes, and if the
+   current trend continues.
+4. EXPERTS & MARKETS: what relevant expert estimates, schedules, or markets
+   imply about timing.
+5. EARLY SCENARIO: a plausible unexpected path to a MUCH EARLIER date.
+6. LATE SCENARIO: a plausible unexpected path to a MUCH LATER date.
+7. TAIL CHECK: good forecasters set WIDE intervals — the single most common
+   error is tails that are too narrow. Your 2.5th and 97.5th percentile dates
+   should feel uncomfortably far apart.
+
+The last lines of your answer must be exactly (dates in strictly increasing
+chronological order, format YYYY-MM-DD; append THH:MM:SSZ in UTC only if the
+hour matters; nothing else on these lines):
+Percentile 2.5: YYYY-MM-DD
+Percentile 10: YYYY-MM-DD
+Percentile 25: YYYY-MM-DD
+Percentile 50: YYYY-MM-DD
+Percentile 75: YYYY-MM-DD
+Percentile 90: YYYY-MM-DD
+Percentile 97.5: YYYY-MM-DD
+""")
+
 RESEARCH_PROMPT_HISTORICAL = """You are a research assistant to a forecaster. For the question below, produce
 a concise OUTSIDE-VIEW report: relevant historical precedents and how often
 similar events happened (rough base rates with counts), structural factors,
