@@ -293,7 +293,7 @@ def build_framework_bot(cfg: BotConfig | None = None):
     """Factory returning a forecasting_tools.ForecastBot subclass instance
     wrapping CalibratedEnsembleBot. Inside a factory so importing this module
     never requires forecasting-tools at test time."""
-    from forecasting_tools import (BinaryQuestion, ForecastBot,
+    from forecasting_tools import (BinaryQuestion, DateQuestion, ForecastBot,
                                    MultipleChoiceQuestion, NumericQuestion,
                                    PredictedOptionList, ReasonedPrediction)
     from forecasting_tools.data_models.multiple_choice_report import \
@@ -418,6 +418,39 @@ def build_framework_bot(cfg: BotConfig | None = None):
             return ReasonedPrediction(
                 prediction_value=dist,
                 reasoning=f"median percentiles across "
+                          f"{len(r.member_percentile_dicts)} members: "
+                          f"{r.median_percentiles}")
+
+        async def _run_forecast_on_date(
+                self, question: DateQuestion, research: str
+        ) -> ReasonedPrediction:
+            lo = to_utc_timestamp(question.lower_bound)
+            hi = to_utc_timestamp(question.upper_bound)
+            lo_msg = (f"The outcome can not be earlier than {question.lower_bound}."
+                      if not question.open_lower_bound else
+                      f"The outcome is likely not earlier than {question.lower_bound}.")
+            hi_msg = (f"The outcome can not be later than {question.upper_bound}."
+                      if not question.open_upper_bound else
+                      f"The outcome is likely not later than {question.upper_bound}.")
+            r = await engine.run_date_ensemble(
+                research=research, lower_bound_message=lo_msg,
+                upper_bound_message=hi_msg, **_common_fields(question))
+            _log(question, "date", r.median_percentiles,
+                 r.member_percentile_dicts, r.member_models)
+            dist = PchipNumericDistribution(
+                declared_percentiles=[
+                    Percentile(percentile=pct / 100.0, value=val)
+                    for pct, val in sorted(r.median_percentiles.items())],
+                open_lower_bound=question.open_lower_bound,
+                open_upper_bound=question.open_upper_bound,
+                lower_bound=lo, upper_bound=hi,
+                zero_point=question.zero_point,
+                cdf_size=question.cdf_size,
+                is_date=True)   # date forecasts render percentiles as dates,
+                                # not raw timestamps, in published comments
+            return ReasonedPrediction(
+                prediction_value=dist,
+                reasoning=f"median date percentiles (unix ts) across "
                           f"{len(r.member_percentile_dicts)} members: "
                           f"{r.median_percentiles}")
 
