@@ -14,8 +14,18 @@ import numpy as np
 from scipy.interpolate import PchipInterpolator
 
 CDF_SIZE = 201
-MIN_STEP = 5.0e-05
-MAX_STEP = 0.2
+# Metaculus' NumericDistribution rejects any CDF step < 5e-05 (strict, no
+# tolerance). A step pinned at exactly 5e-05 round-trips through float64 to
+# 4.9999...e-05 (e.g. (0.001 + 5e-05) - 0.001) and is rejected on submission,
+# so we ENFORCE a hair above the platform floor — the margin (1e-6) dwarfs the
+# ~1e-16 round-trip noise yet is immaterial to tail mass.
+PLATFORM_MIN_STEP = 5.0e-05
+MIN_STEP = PLATFORM_MIN_STEP + 1.0e-6
+# Symmetric ceiling: Metaculus rejects any bin with mass > 0.2 (strict). A bin
+# clipped to exactly 0.2 round-trips to 0.2000...07 > 0.2 and is rejected, so we
+# ENFORCE a hair below the platform ceiling (margin immaterial to the forecast).
+PLATFORM_MAX_STEP = 0.2
+MAX_STEP = PLATFORM_MAX_STEP - 1.0e-6
 MIN_OUTSIDE = 0.001
 
 
@@ -90,10 +100,10 @@ def validate_cdf(c, open_lower: bool, open_upper: bool) -> None:
     if len(c) != CDF_SIZE:
         raise ValueError(f"cdf must have {CDF_SIZE} points, got {len(c)}")
     d = np.diff(c)
-    if d.min() < MIN_STEP - 1e-9:
-        raise ValueError(f"cdf step below minimum: {d.min()}")
-    if d.max() > MAX_STEP + 1e-9:
-        raise ValueError(f"cdf step above maximum: {d.max()}")
+    if d.min() < PLATFORM_MIN_STEP:        # constraints the platform enforces (strict, no slack)
+        raise ValueError(f"cdf step below platform minimum {PLATFORM_MIN_STEP}: {d.min()}")
+    if d.max() > PLATFORM_MAX_STEP:
+        raise ValueError(f"cdf step above platform maximum {PLATFORM_MAX_STEP}: {d.max()}")
     lo_ok = c[0] >= MIN_OUTSIDE - 1e-9 if open_lower else abs(c[0]) < 1e-9
     hi_ok = c[-1] <= 1 - MIN_OUTSIDE + 1e-9 if open_upper else abs(c[-1] - 1) < 1e-9
     if not (lo_ok and hi_ok):
