@@ -75,3 +75,28 @@ def test_load_backtest_runs_discovers_and_sorts(tmp_path):
 
 def test_load_backtest_runs_missing_root_returns_empty(tmp_path):
     assert load_backtest_runs(tmp_path / "nope") == []
+
+
+# Task 3: Roadmap parser
+from scripts.dashboard import parse_roadmap
+
+
+def test_parse_roadmap_extracts_rank_title_and_tag():
+    md = (
+        "# heading noise\n"
+        "### 1. Ship a calibration layer now: Platt vs extremization "
+        "— **IMMEDIATE, $0 replay**\n"
+        "some body text\n"
+        "### 2. Swap regressed ensemble members — newest != best\n"
+        "### 10. Research composition: restore outside-view track\n"
+    )
+    items = parse_roadmap(md)
+    assert [i["rank"] for i in items] == [1, 2, 10]
+    assert items[0]["title"].startswith("Ship a calibration layer now")
+    assert items[0]["tag"] == "IMMEDIATE, $0 replay"
+    assert items[1]["tag"] == ""          # no bold tag
+    assert "Swap regressed ensemble members" in items[1]["title"]
+
+
+def test_parse_roadmap_empty_text():
+    assert parse_roadmap("") == []
