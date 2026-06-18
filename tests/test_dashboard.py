@@ -29,3 +29,49 @@ def test_summarize_forecasts_empty():
     assert s["total"] == 0
     assert s["binary_finals"] == []
     assert s["last_forecast"] is None
+
+
+# Task 2: Backtest-run aggregator
+import json
+from scripts.dashboard import summarize_backtest_scores, load_backtest_runs
+
+
+def test_summarize_backtest_scores_means_and_counts():
+    scores = [
+        {"brier": 0.10, "log_score": -0.3, "baseline_score": 12.0,
+         "h2h_market": 5.0, "h2h_cp": None},
+        {"brier": 0.20, "log_score": -0.5, "baseline_score": 8.0,
+         "h2h_market": 3.0, "h2h_cp": 2.0},
+        {"brier": None, "log_score": None, "baseline_score": None,
+         "h2h_market": None, "h2h_cp": None},  # unscored row ignored
+    ]
+    manifest = {"run_id": "current-bot-clean-0-91c43068",
+                "spec_name": "current-bot-clean", "actual_cost_usd": 1.23}
+    s = summarize_backtest_scores(scores, manifest)
+    assert s["run_id"] == "current-bot-clean-0-91c43068"
+    assert s["n_scored"] == 2
+    assert s["mean_brier"] == 0.15
+    assert s["mean_log_score"] == -0.4
+    assert s["mean_h2h_market"] == 4.0
+    assert s["mean_h2h_cp"] == 2.0          # only the one non-null
+    assert s["actual_cost_usd"] == 1.23
+
+
+def test_load_backtest_runs_discovers_and_sorts(tmp_path):
+    root = tmp_path / "backtest"
+    run = root / "spec" / "spec-0-abc"
+    run.mkdir(parents=True)
+    (run / "scores.jsonl").write_text(
+        json.dumps({"brier": 0.1, "log_score": -0.2, "baseline_score": 1.0,
+                    "h2h_market": None, "h2h_cp": None}) + "\n")
+    (run / "manifest.json").write_text(
+        json.dumps({"run_id": "spec-0-abc", "spec_name": "spec",
+                    "actual_cost_usd": 0.5}))
+    runs = load_backtest_runs(root)
+    assert len(runs) == 1
+    assert runs[0]["run_id"] == "spec-0-abc"
+    assert runs[0]["n_scored"] == 1
+
+
+def test_load_backtest_runs_missing_root_returns_empty(tmp_path):
+    assert load_backtest_runs(tmp_path / "nope") == []

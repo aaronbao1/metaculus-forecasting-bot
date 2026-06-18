@@ -54,7 +54,7 @@ def summarize_forecasts(rows: list[dict]) -> dict:
 
 def _mean(xs: list) -> float | None:
     xs = [x for x in xs if x is not None]
-    return sum(xs) / len(xs) if xs else None
+    return round(sum(xs) / len(xs), 10) if xs else None
 
 
 def summarize_backtest_scores(scores: list[dict], manifest: dict) -> dict:
