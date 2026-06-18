@@ -78,6 +78,21 @@ def test_results_summary_counts_and_lists(tmp_path):
     assert "exp/run1" in md                 # run id of the report
 
 
+def test_results_summary_skips_non_dict_jsonl_lines(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    # Append valid-JSON-but-not-an-object lines alongside the one dict record.
+    (repo / "logs/forecasts.jsonl").write_text(
+        '{"question_id": 1, "type": "numeric", "page_url": "u1"}\n'
+        '"corrupt"\n'
+        "42\n"
+        "[1, 2]\n"
+        "null\n"
+    )
+    md = ek.build_results_summary(repo)        # must not raise AttributeError
+    assert "Live forecasts: 1" in md           # only the dict record counts
+    assert "numeric: 1" in md
+
+
 def test_index_lists_sections_and_exclusions(tmp_path):
     repo = make_repo(tmp_path / "repo")
     out = tmp_path / "out"

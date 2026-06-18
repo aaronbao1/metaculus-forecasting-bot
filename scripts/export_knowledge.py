@@ -7,11 +7,22 @@ INDEX.md / MANIFEST.json / RESULTS_SUMMARY.md and atomic publishing.
 """
 from __future__ import annotations
 
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = Path.home() / "Library/Application Support/metaculus-bot/export"
+
+# Generated docs written into the export tree (not part of the source repo).
+GENERATED_FILES = {"INDEX.md", "MANIFEST.json", "RESULTS_SUMMARY.md"}
 
 
 @dataclass(frozen=True)
@@ -70,16 +81,12 @@ def resolve_files(repo_root: Path) -> list[tuple[Path, Path]]:
             if is_excluded(rel_repo):
                 continue
             dest_rel = Path(rule.dest) / src.relative_to(base)
+            # Contract: first matching rule wins on destination collision.
             if dest_rel in seen:
                 continue
             seen.add(dest_rel)
             pairs.append((src, dest_rel))
     return pairs
-
-
-import hashlib
-import json
-import subprocess
 
 
 DESCRIPTIONS = {
@@ -151,9 +158,13 @@ def build_results_summary(repo_root: Path) -> str:
             if not line:
                 continue
             try:
-                records.append(json.loads(line))
+                obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            # Skip valid-JSON-but-not-an-object lines (bare strings, numbers,
+            # arrays, null) so an unattended export never aborts on `r.get(...)`.
+            if isinstance(obj, dict):
+                records.append(obj)
         by_type: dict[str, int] = {}
         for r in records:
             t = r.get("type", "unknown")
@@ -185,7 +196,6 @@ def build_results_summary(repo_root: Path) -> str:
 
 def build_index(out_dir: Path, repo_root: Path, commit: str, subject: str,
                 ts: str, results_summary: str) -> str:
-    GENERATED = {"INDEX.md", "MANIFEST.json", "RESULTS_SUMMARY.md"}
     lines = [
         "# Metaculus Forecasting Bot — Knowledge Export",
         "",
@@ -201,7 +211,7 @@ def build_index(out_dir: Path, repo_root: Path, commit: str, subject: str,
     files = sorted(p.relative_to(out_dir) for p in out_dir.rglob("*") if p.is_file())
     by_top: dict[str, list[Path]] = {}
     for f in files:
-        if f.name in GENERATED:
+        if f.name in GENERATED_FILES:
             continue
         by_top.setdefault(f.parts[0], []).append(f)
     for top in sorted(by_top):
@@ -235,16 +245,13 @@ def build_index(out_dir: Path, repo_root: Path, commit: str, subject: str,
     return "\n".join(lines)
 
 
-import os
-import shutil
-import tempfile
-from datetime import datetime, timezone
-
-
 def build_manifest(out_dir: Path, commit: str, ts: str) -> dict:
     files = []
     total = 0
     for p in sorted(out_dir.rglob("*")):
+        # Deliberate asymmetry vs. build_index: the manifest hashes the generated
+        # docs that actually ship (INDEX.md / RESULTS_SUMMARY.md) and excludes only
+        # itself, whereas the human-facing index lists none of GENERATED_FILES.
         if not p.is_file() or p.name == "MANIFEST.json":
             continue
         size = p.stat().st_size
@@ -295,9 +302,6 @@ def build_export(repo_root: Path, out_dir: Path) -> dict:
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
-
-
-import argparse
 
 
 def main(argv: list[str] | None = None) -> int:
