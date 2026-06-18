@@ -295,3 +295,31 @@ def build_export(repo_root: Path, out_dir: Path) -> dict:
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
+
+
+import argparse
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Build the knowledge export tree.")
+    ap.add_argument("--out", type=Path, default=DEFAULT_OUT, help="staging output dir")
+    ap.add_argument("--repo-root", type=Path, default=REPO_ROOT, help="repo root to export from")
+    ap.add_argument("--dry-run", action="store_true", help="print planned files; write nothing")
+    args = ap.parse_args(argv)
+
+    if args.dry_run:
+        pairs = resolve_files(args.repo_root)
+        total = sum(src.stat().st_size for src, _ in pairs)
+        print(f"[dry-run] {len(pairs)} files, {human_bytes(total)} would be exported to {args.out}")
+        for src, dest in pairs:
+            print(f"  {dest}  ({human_bytes(src.stat().st_size)})")
+        return 0
+
+    manifest = build_export(args.repo_root, args.out)
+    print(f"Exported {manifest['file_count']} files "
+          f"({human_bytes(manifest['total_bytes'])}) to {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

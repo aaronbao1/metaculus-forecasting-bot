@@ -127,3 +127,22 @@ def test_rebuild_is_atomic_and_clears_stale(tmp_path):
     ek.build_export(repo, out)            # second build
     assert not stale.exists()             # stale file gone after swap
     assert (out / "research/FORECASTING-BOT-RESEARCH.md").is_file()
+
+
+def test_dry_run_writes_nothing(tmp_path, capsys):
+    repo = make_repo(tmp_path / "repo")
+    out = tmp_path / "out"
+    rc = ek.main(["--repo-root", str(repo), "--out", str(out), "--dry-run"])
+    assert rc == 0
+    assert not out.exists()
+    captured = capsys.readouterr().out
+    assert "dry-run" in captured.lower()
+    assert "research/FORECASTING-BOT-RESEARCH.md" in captured
+
+
+def test_main_builds_when_not_dry(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    out = tmp_path / "out"
+    rc = ek.main(["--repo-root", str(repo), "--out", str(out)])
+    assert rc == 0
+    assert (out / "INDEX.md").is_file()
