@@ -16,9 +16,6 @@ from datetime import datetime, timezone
 from html import escape as _escape
 from pathlib import Path
 
-RESEARCH_PROVIDERS = ("asknews", "search_llm", "markets")
-
-
 def summarize_forecasts(rows: list[dict]) -> dict:
     by_type = Counter(r.get("type") for r in rows if r.get("type"))
     by_config = Counter(r.get("config_hash") for r in rows if r.get("config_hash"))
@@ -59,6 +56,7 @@ def _mean(xs: list) -> float | None:
 
 def summarize_backtest_scores(scores: list[dict], manifest: dict) -> dict:
     scored = [r for r in scores if r.get("log_score") is not None]
+    # Stable data contract: spec_name, mean_log_score, mean_baseline, mean_h2h_cp are computed but not all rendered yet.
     return {
         "run_id": manifest.get("run_id"),
         "spec_name": manifest.get("spec_name"),
@@ -151,7 +149,10 @@ def esc(s) -> str:
 
 
 def _fmt_num(x) -> str:
+    if x is None:
+        return "—"
     if isinstance(x, float):
+        # 1000 threshold: compact formatting for large dollar/score values
         return f"{x:.2f}".rstrip("0").rstrip(".") if abs(x) < 1000 else f"{x:.0f}"
     return str(x)
 
@@ -178,6 +179,7 @@ def svg_bars(pairs, *, width: int = 460, bar_h: int = 22, gap: int = 6,
     height = len(pairs) * (bar_h + gap) + gap
     parts = []
     for i, (label, value) in enumerate(pairs):
+        value = value or 0
         y = gap + i * (bar_h + gap)
         w = max(1, int(track_w * (value / mx)))
         ty = y + int(bar_h * 0.7)
@@ -269,12 +271,14 @@ def render_forecasts(f: dict) -> str:
     prov = sorted(f.get("provider_coverage", {}).items(), key=lambda kv: -kv[1])
     hist = histogram(f.get("binary_finals", []))
     timeline = f.get("timeline", [])
+    by_config = sorted(f.get("by_config", {}).items(), key=lambda kv: -kv[1])
     body = [
         f'<div class="big">{f.get("total", 0)}<span class="muted"> forecasts</span></div>',
         "<h3 class='muted'>By type</h3>", svg_bars(by_type),
         "<h3 class='muted'>Research-provider coverage</h3>", svg_bars(prov, color="#3fb950"),
         "<h3 class='muted'>Binary prediction distribution</h3>", svg_bars(hist, color="#a371f7"),
         "<h3 class='muted'>Forecasts per day</h3>", svg_bars(timeline, color="#d9a441"),
+        "<h3 class='muted'>By config hash</h3>", svg_bars(by_config, color="#8b949e"),
     ]
     return f'<div class="card"><h2>📊 Questions / forecasts</h2>{"".join(body)}</div>'
 
@@ -375,7 +379,12 @@ def build_context(root: Path, openrouter_key: str | None,
                   generated_at: str) -> dict:
     root = Path(root)
     fc_path = root / "logs" / "forecasts.jsonl"
-    rows = _read_jsonl(fc_path) if fc_path.exists() else []
+    rows = []
+    if fc_path.exists():
+        try:
+            rows = _read_jsonl(fc_path)
+        except (json.JSONDecodeError, OSError):
+            rows = []
     forecasts = summarize_forecasts(rows)
     backtests = load_backtest_runs(root / "logs" / "backtest")
     rm_path = root / "research-notes" / "08-improvement-roadmap.md"

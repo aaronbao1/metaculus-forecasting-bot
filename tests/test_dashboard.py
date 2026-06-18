@@ -1,4 +1,22 @@
-from scripts.dashboard import summarize_forecasts
+import json
+
+import scripts.dashboard as _dash_module
+from scripts.dashboard import (
+    build_context,
+    esc,
+    fetch_openrouter_usage,
+    histogram,
+    load_backtest_runs,
+    parse_openrouter_key,
+    parse_roadmap,
+    render_backtests,
+    render_page,
+    render_roadmap,
+    summarize_backtest_scores,
+    summarize_forecasts,
+    svg_bars,
+    svg_gauge,
+)
 
 
 def test_summarize_forecasts_counts_types_providers_and_timeline():
@@ -29,11 +47,6 @@ def test_summarize_forecasts_empty():
     assert s["total"] == 0
     assert s["binary_finals"] == []
     assert s["last_forecast"] is None
-
-
-# Task 2: Backtest-run aggregator
-import json
-from scripts.dashboard import summarize_backtest_scores, load_backtest_runs
 
 
 def test_summarize_backtest_scores_means_and_counts():
@@ -77,10 +90,6 @@ def test_load_backtest_runs_missing_root_returns_empty(tmp_path):
     assert load_backtest_runs(tmp_path / "nope") == []
 
 
-# Task 3: Roadmap parser
-from scripts.dashboard import parse_roadmap
-
-
 def test_parse_roadmap_extracts_rank_title_and_tag():
     md = (
         "# heading noise\n"
@@ -100,10 +109,6 @@ def test_parse_roadmap_extracts_rank_title_and_tag():
 
 def test_parse_roadmap_empty_text():
     assert parse_roadmap("") == []
-
-
-# Task 4: OpenRouter usage
-from scripts.dashboard import parse_openrouter_key, fetch_openrouter_usage
 
 
 def test_parse_openrouter_key_maps_fields():
@@ -128,10 +133,6 @@ def test_parse_openrouter_key_tolerates_missing_fields():
 def test_fetch_openrouter_usage_no_key_returns_none():
     assert fetch_openrouter_usage(None) is None
     assert fetch_openrouter_usage("") is None
-
-
-# Task 5: Inline-SVG chart + numeric helpers
-from scripts.dashboard import svg_bars, svg_gauge, histogram, esc
 
 
 def test_histogram_buckets_into_ten_bins():
@@ -161,10 +162,6 @@ def test_svg_gauge_clamps_and_colors():
 
 def test_esc_escapes_html():
     assert esc("<a>&\"") == "&lt;a&gt;&amp;&quot;"
-
-
-# Task 6: HTML page renderer
-from scripts.dashboard import render_page
 
 
 def _ctx():
@@ -208,10 +205,6 @@ def test_render_page_handles_missing_costs():
     assert "unavailable" in html.lower()
 
 
-# Task 7: main() wiring
-from scripts.dashboard import build_context
-
-
 def test_build_context_assembles_all_sections(tmp_path, monkeypatch):
     # forecasts log
     (tmp_path / "logs").mkdir()
@@ -251,3 +244,28 @@ def test_build_context_missing_files_is_safe(tmp_path, monkeypatch):
     assert ctx["forecasts"]["total"] == 0
     assert ctx["backtests"] == []
     assert ctx["roadmap"] == []
+
+
+# Degradation / never-crash tests
+
+def test_gather_status_degrades_to_unknown(monkeypatch, tmp_path):
+    import scripts.dashboard as _dash
+    monkeypatch.setattr(_dash, "_run", lambda *a, **k: None)
+    s = _dash.gather_status(tmp_path)
+    assert s["workflow_state"] == "unknown"
+    assert s["submit_prediction"] == "unknown"
+    assert s["origin"] == "unknown"
+
+
+def test_build_context_tolerates_malformed_forecasts_line(tmp_path, monkeypatch):
+    import scripts.dashboard as _dash
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "forecasts.jsonl").write_text("{not valid json\n")
+    monkeypatch.setattr(_dash, "fetch_openrouter_usage", lambda *a, **k: None)
+    ctx = _dash.build_context(root=tmp_path, openrouter_key=None, generated_at="T")
+    assert ctx["forecasts"]["total"] == 0      # did not crash
+
+
+def test_render_empty_backtests_and_roadmap():
+    assert "No runs" in render_backtests([])
+    assert "not found" in render_roadmap([])
