@@ -233,3 +233,65 @@ def build_index(out_dir: Path, repo_root: Path, commit: str, subject: str,
         results_summary,
     ]
     return "\n".join(lines)
+
+
+import os
+import shutil
+import tempfile
+from datetime import datetime, timezone
+
+
+def build_manifest(out_dir: Path, commit: str, ts: str) -> dict:
+    files = []
+    total = 0
+    for p in sorted(out_dir.rglob("*")):
+        if not p.is_file() or p.name == "MANIFEST.json":
+            continue
+        size = p.stat().st_size
+        total += size
+        files.append({"path": str(p.relative_to(out_dir)), "sha256": sha256(p), "bytes": size})
+    return {
+        "generated_at_utc": ts,
+        "git_commit": commit,
+        "file_count": len(files),
+        "total_bytes": total,
+        "files": files,
+    }
+
+
+def _swap(tmp: Path, out: Path) -> None:
+    """Atomically replace `out` with `tmp` (same filesystem)."""
+    if out.exists():
+        old = out.with_name(out.name + ".old")
+        shutil.rmtree(old, ignore_errors=True)
+        os.replace(out, old)
+        os.replace(tmp, out)
+        shutil.rmtree(old, ignore_errors=True)
+    else:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(tmp, out)
+
+
+def build_export(repo_root: Path, out_dir: Path) -> dict:
+    pairs = resolve_files(repo_root)
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=".export-tmp-", dir=out_dir.parent))
+    try:
+        for src, dest_rel in pairs:
+            dest = tmp / dest_rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+        commit, subject = git_info(repo_root)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        results = build_results_summary(repo_root)
+        (tmp / "RESULTS_SUMMARY.md").write_text(results)
+        (tmp / "INDEX.md").write_text(
+            build_index(tmp, repo_root, commit, subject, ts, results)
+        )
+        manifest = build_manifest(tmp, commit, ts)
+        (tmp / "MANIFEST.json").write_text(json.dumps(manifest, indent=2))
+        _swap(tmp, out_dir)
+        return manifest
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise

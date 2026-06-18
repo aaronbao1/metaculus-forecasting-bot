@@ -93,3 +93,37 @@ def test_index_lists_sections_and_exclusions(tmp_path):
     assert "Excluded from this export" in idx
     assert "corpus.db" in idx or "data/backtest" in idx
     assert "RESULTS_BODY" in idx           # results summary inlined
+
+
+import json as _json
+
+
+def test_build_export_writes_tree_manifest_and_generated(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    out = tmp_path / "out"
+    manifest = ek.build_export(repo, out)
+
+    assert (out / "research/FORECASTING-BOT-RESEARCH.md").is_file()
+    assert (out / "results/backtest-reports/exp/run1/report.md").is_file()
+    assert (out / "INDEX.md").is_file()
+    assert (out / "RESULTS_SUMMARY.md").is_file()
+    assert (out / "MANIFEST.json").is_file()
+    assert not (out / "code/bot/__pycache__/x.pyc").exists()
+
+    # manifest integrity: every listed hash matches the file on disk
+    data = _json.loads((out / "MANIFEST.json").read_text())
+    assert data["file_count"] == len(data["files"])
+    assert all(e["path"] != "MANIFEST.json" for e in data["files"])
+    for entry in data["files"]:
+        assert ek.sha256(out / entry["path"]) == entry["sha256"]
+
+
+def test_rebuild_is_atomic_and_clears_stale(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    out = tmp_path / "out"
+    ek.build_export(repo, out)
+    stale = out / "research/STALE.md"
+    stale.write_text("old")
+    ek.build_export(repo, out)            # second build
+    assert not stale.exists()             # stale file gone after swap
+    assert (out / "research/FORECASTING-BOT-RESEARCH.md").is_file()
