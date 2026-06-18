@@ -100,3 +100,31 @@ def test_parse_roadmap_extracts_rank_title_and_tag():
 
 def test_parse_roadmap_empty_text():
     assert parse_roadmap("") == []
+
+
+# Task 4: OpenRouter usage
+from scripts.dashboard import parse_openrouter_key, fetch_openrouter_usage
+
+
+def test_parse_openrouter_key_maps_fields():
+    data = {"data": {"usage": 120.37, "limit": 100, "limit_remaining": 29.29,
+                     "usage_daily": 0.5, "usage_weekly": 70.7,
+                     "usage_monthly": 120.37, "limit_reset": "weekly"}}
+    u = parse_openrouter_key(data)
+    assert u["usage"] == 120.37
+    assert u["limit"] == 100
+    assert u["limit_remaining"] == 29.29
+    assert u["usage_weekly"] == 70.7
+    assert u["limit_reset"] == "weekly"
+
+
+def test_parse_openrouter_key_tolerates_missing_fields():
+    u = parse_openrouter_key({"data": {"usage": 5.0}})
+    assert u["usage"] == 5.0
+    assert u["limit"] is None
+    assert u["usage_weekly"] is None
+
+
+def test_fetch_openrouter_usage_no_key_returns_none():
+    assert fetch_openrouter_usage(None) is None
+    assert fetch_openrouter_usage("") is None
