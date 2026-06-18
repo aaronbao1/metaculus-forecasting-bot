@@ -116,7 +116,8 @@ python3.
 Thin orchestrator. Bash, `set -euo pipefail`. Resolves repo root from its own
 path. Flock-style lock via `mkdir` (atomic). If `gdrive:` remote missing → exit
 3 with a message telling the user to run `rclone config`. Honors `DRY_RUN=1`
-(passes `--dry-run` to the builder and `--dry-run` to rclone).
+(runs the builder with `--dry-run` and then exits 0 before invoking rclone — no
+upload at all).
 
 ### `deploy/com.aaron.metaculus-bot-export.plist`
 launchd template (paths absolute, matching the existing bot-trigger job):
