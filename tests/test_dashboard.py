@@ -161,3 +161,48 @@ def test_svg_gauge_clamps_and_colors():
 
 def test_esc_escapes_html():
     assert esc("<a>&\"") == "&lt;a&gt;&amp;&quot;"
+
+
+# Task 6: HTML page renderer
+from scripts.dashboard import render_page
+
+
+def _ctx():
+    return {
+        "generated_at": "2026-06-18T00:00:00+00:00",
+        "status": {"workflow_state": "disabled", "submit_prediction": "false",
+                   "origin": "in sync", "last_forecast": "2026-06-12T09:00:00+00:00",
+                   "total": 58},
+        "costs": {"usage": 120.37, "limit": 100, "limit_remaining": 29.29,
+                  "usage_weekly": 70.7, "usage_daily": 0.5, "usage_monthly": 120.37,
+                  "limit_reset": "weekly"},
+        "forecasts": {"total": 58, "by_type": {"binary": 20, "numeric": 24},
+                      "by_config": {"aaa": 58},
+                      "provider_coverage": {"asknews": 30, "markets": 58, "none": 2},
+                      "binary_finals": [0.2, 0.9], "timeline": [("2026-06-11", 58)],
+                      "last_forecast": "2026-06-12T09:00:00+00:00"},
+        "backtests": [{"run_id": "current-bot-clean-0-91c43068",
+                       "spec_name": "current-bot-clean", "n_scored": 121,
+                       "n_total": 485, "mean_brier": 0.094, "mean_log_score": -0.3,
+                       "mean_baseline": 12.0, "mean_h2h_market": 5.31,
+                       "mean_h2h_cp": None, "actual_cost_usd": 1.23,
+                       "report_path": "logs/backtest/x/report.md"}],
+        "roadmap": [{"rank": 1, "title": "Ship calibration layer", "tag": "IMMEDIATE, $0"}],
+    }
+
+
+def test_render_page_is_self_contained_html_with_all_panels():
+    html = render_page(_ctx())
+    assert html.startswith("<!doctype html>")
+    assert "<script" not in html.lower()        # no JS
+    assert "http://" not in html.replace("http://www.w3.org/2000/svg", "")  # no external links
+    for marker in ("API costs", "Questions", "Backtest", "Future directions",
+                   "current-bot-clean-0-91c43068", "Ship calibration layer", "29.29"):
+        assert marker in html
+
+
+def test_render_page_handles_missing_costs():
+    ctx = _ctx()
+    ctx["costs"] = None
+    html = render_page(ctx)
+    assert "unavailable" in html.lower()
