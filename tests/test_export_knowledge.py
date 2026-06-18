@@ -10,6 +10,8 @@ def make_repo(root: Path) -> Path:
     (root / "FORECASTING-BOT-RESEARCH.md").write_text("# Master Research")
     (root / "docs/backtesting").mkdir(parents=True)
     (root / "docs/backtesting/DATA.md").write_text("# Data")
+    (root / "docs/diagram.svg").write_text("<svg></svg>")
+    (root / "docs/.DS_Store").write_text("junk")
     (root / "bot").mkdir()
     (root / "bot/__init__.py").write_text("")
     (root / "bot/__pycache__").mkdir()
@@ -50,6 +52,17 @@ def test_allowlisted_files_mapped_to_dest(tmp_path):
     assert "configs/.env.template" in d
     assert "results/forecasts.jsonl" in d
     assert "results/run-logs/gate_c_run.log" in d
+
+
+def test_docs_rule_exports_all_files_keeps_exclusions(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    d = dests(repo)
+    # Non-markdown doc is now exported (spec parity: docs/** not docs/**/*.md).
+    assert "docs/diagram.svg" in d
+    # Nested markdown still works under the widened glob.
+    assert "docs/backtesting/DATA.md" in d
+    # Exclusions still win under **/* — no .DS_Store sneaks through.
+    assert not any(".DS_Store" in x for x in d)
 
 
 def test_excludes_secrets_data_and_cache(tmp_path):

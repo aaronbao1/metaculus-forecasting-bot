@@ -35,7 +35,7 @@ class Rule:
 INCLUDE_RULES: tuple[Rule, ...] = (
     Rule("", "FORECASTING-BOT-RESEARCH.md", "research"),
     Rule("research-notes", "*.md", "research/research-notes"),
-    Rule("docs", "**/*.md", "docs"),
+    Rule("docs", "**/*", "docs"),
     Rule("bot", "**/*.py", "code/bot"),
     Rule("backtest", "**/*.py", "code/backtest"),
     Rule("scripts", "**/*.py", "code/scripts"),
