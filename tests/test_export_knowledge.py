@@ -66,3 +66,30 @@ def test_backtest_report_included_but_not_siblings(tmp_path):
     d = dests(repo)
     assert "results/backtest-reports/exp/run1/report.md" in d
     assert not any("cache.json" in x for x in d)
+
+
+def test_results_summary_counts_and_lists(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    md = ek.build_results_summary(repo)
+    assert "Live forecasts: 1" in md
+    assert "numeric: 1" in md
+    assert "u1" in md                       # page_url in the table
+    assert "Backtest reports: 1" in md
+    assert "exp/run1" in md                 # run id of the report
+
+
+def test_index_lists_sections_and_exclusions(tmp_path):
+    repo = make_repo(tmp_path / "repo")
+    out = tmp_path / "out"
+    # lay down a couple of files so the index has something to enumerate
+    (out / "research/research-notes").mkdir(parents=True)
+    (out / "research/research-notes/01-x.md").write_text("# Note One\n")
+    (out / "code/bot").mkdir(parents=True)
+    (out / "code/bot/__init__.py").write_text("")
+    idx = ek.build_index(out, repo, "abc123", "some subject", "2026-06-18 00:00:00 UTC", "RESULTS_BODY")
+    assert "abc123" in idx and "some subject" in idx
+    assert "### research/" in idx
+    assert "### code/" in idx
+    assert "Excluded from this export" in idx
+    assert "corpus.db" in idx or "data/backtest" in idx
+    assert "RESULTS_BODY" in idx           # results summary inlined
