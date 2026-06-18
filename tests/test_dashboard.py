@@ -206,3 +206,48 @@ def test_render_page_handles_missing_costs():
     ctx["costs"] = None
     html = render_page(ctx)
     assert "unavailable" in html.lower()
+
+
+# Task 7: main() wiring
+from scripts.dashboard import build_context
+
+
+def test_build_context_assembles_all_sections(tmp_path, monkeypatch):
+    # forecasts log
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "forecasts.jsonl").write_text(
+        json.dumps({"type": "binary", "final": 0.3, "config_hash": "aaa",
+                    "research_providers": "asknews,markets",
+                    "logged_at": "2026-06-11T16:32:02+00:00"}) + "\n")
+    # backtest run
+    run = tmp_path / "logs" / "backtest" / "spec" / "spec-0-abc"
+    run.mkdir(parents=True)
+    (run / "scores.jsonl").write_text(
+        json.dumps({"brier": 0.1, "log_score": -0.2, "baseline_score": 1.0,
+                    "h2h_market": 2.0, "h2h_cp": None}) + "\n")
+    (run / "manifest.json").write_text(
+        json.dumps({"run_id": "spec-0-abc", "spec_name": "spec",
+                    "actual_cost_usd": 0.4}))
+    # roadmap
+    notes = tmp_path / "research-notes"
+    notes.mkdir()
+    (notes / "08-improvement-roadmap.md").write_text("### 1. Do the thing — **$0**\n")
+
+    # no network: force costs None
+    import scripts.dashboard as _dash
+    monkeypatch.setattr(_dash, "fetch_openrouter_usage", lambda *a, **k: None)
+    ctx = build_context(root=tmp_path, openrouter_key=None, generated_at="T")
+    assert ctx["forecasts"]["total"] == 1
+    assert ctx["backtests"][0]["run_id"] == "spec-0-abc"
+    assert ctx["roadmap"][0]["title"] == "Do the thing"
+    assert ctx["costs"] is None
+    assert ctx["generated_at"] == "T"
+
+
+def test_build_context_missing_files_is_safe(tmp_path, monkeypatch):
+    import scripts.dashboard as _dash
+    monkeypatch.setattr(_dash, "fetch_openrouter_usage", lambda *a, **k: None)
+    ctx = build_context(root=tmp_path, openrouter_key=None, generated_at="T")
+    assert ctx["forecasts"]["total"] == 0
+    assert ctx["backtests"] == []
+    assert ctx["roadmap"] == []

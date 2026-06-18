@@ -8,3 +8,6 @@ logs/backtest/
 *.egg-info/
 data/backtest/
 .DS_Store
+
+# generated monitoring dashboard (embeds live OpenRouter balance)
+dashboard.html
