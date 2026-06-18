@@ -105,3 +105,27 @@ async def test_date_pipeline_medians_timestamps(monkeypatch):
     assert 2.5 in result.median_percentiles
     assert 97.5 in result.median_percentiles
     assert len(result.member_models) == 6
+
+
+async def test_invoke_model_caps_max_tokens(monkeypatch):
+    """The ensemble must build its LLM with a bounded max_tokens. The
+    forecasting_tools GeneralLlm default is 65536, which OpenRouter reserves
+    in full against the weekly limit and 402s ("can only afford ...") when the
+    cap is tight. The member's configured cap must reach GeneralLlm."""
+    captured = {}
+
+    class FakeLlm:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def invoke(self, prompt):
+            return "ok"
+
+    import forecasting_tools
+    monkeypatch.setattr(forecasting_tools, "GeneralLlm", FakeLlm)
+
+    member = EnsembleMember("fake/model-a", runs=1, max_tokens=12345)
+    bot = CalibratedEnsembleBot(bot_config=BotConfig(ensemble=[member]))
+    await bot._invoke_model((member, "hi"))
+
+    assert captured.get("max_tokens") == 12345

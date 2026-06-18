@@ -113,7 +113,8 @@ class CalibratedEnsembleBot:
         member, prompt = member_and_prompt
         from forecasting_tools import GeneralLlm
         llm = GeneralLlm(model=f"openrouter/{member.model}",
-                         temperature=member.temperature, timeout=900)
+                         temperature=member.temperature, timeout=900,
+                         max_tokens=member.max_tokens)
         return await llm.invoke(prompt)
 
     async def _fan_out(self, prompt: str):

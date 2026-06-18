@@ -15,6 +15,12 @@ class EnsembleMember:
     model: str            # OpenRouter slug, e.g. "anthropic/claude-opus-4-6"
     runs: int = 2
     temperature: float = 0.5
+    # Cap the per-call output budget. forecasting_tools' GeneralLlm defaults to
+    # 65536, which OpenRouter reserves IN FULL against the key's weekly limit
+    # ("requested up to 65536 tokens, can only afford ...") and 402s when the
+    # cap is tight — starving the ensemble ("0 members survived"). A forecast's
+    # actual output is a few thousand tokens, so 16k is ample headroom.
+    max_tokens: int = 16384
 
 
 def _default_ensemble() -> list[EnsembleMember]:
