@@ -128,3 +128,36 @@ def test_parse_openrouter_key_tolerates_missing_fields():
 def test_fetch_openrouter_usage_no_key_returns_none():
     assert fetch_openrouter_usage(None) is None
     assert fetch_openrouter_usage("") is None
+
+
+# Task 5: Inline-SVG chart + numeric helpers
+from scripts.dashboard import svg_bars, svg_gauge, histogram, esc
+
+
+def test_histogram_buckets_into_ten_bins():
+    h = histogram([0.05, 0.15, 0.15, 0.99])
+    assert len(h) == 10
+    assert h[0] == ("0.0–0.1", 1)
+    assert h[1] == ("0.1–0.2", 2)
+    assert h[9] == ("0.9–1.0", 1)
+
+
+def test_svg_bars_renders_each_pair():
+    out = svg_bars([("binary", 2), ("numeric", 1)])
+    assert out.startswith("<svg")
+    assert "binary" in out and "numeric" in out
+    assert out.count("<rect") == 2
+
+
+def test_svg_bars_empty_is_safe():
+    assert svg_bars([]).startswith("<svg")
+
+
+def test_svg_gauge_clamps_and_colors():
+    assert svg_gauge(50, 100).startswith("<svg")
+    assert svg_gauge(200, 100).startswith("<svg")   # over-limit clamps, no crash
+    assert svg_gauge(1, 0).startswith("<svg")        # zero limit, no div-by-zero
+
+
+def test_esc_escapes_html():
+    assert esc("<a>&\"") == "&lt;a&gt;&amp;&quot;"
