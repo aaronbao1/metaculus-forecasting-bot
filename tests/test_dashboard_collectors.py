@@ -164,3 +164,49 @@ def test_parse_coverage_no_gap():
     open_posts = [{"id": 1, "title": "Q1", "question": {"id": 11, "type": "binary"}}]
     out = collectors.parse_coverage(open_posts, {1})
     assert out["gap_count"] == 0 and out["gap"] == []
+
+
+def test_fetch_posts_paginates(monkeypatch):
+    # two pages then empty
+    pages = [
+        _FakeResp(200, {"results": [{"id": 1, "title": "a", "question": {"id": 11, "type": "binary"}}], "next": "x"}),
+        _FakeResp(200, {"results": [{"id": 2, "title": "b", "question": {"id": 22, "type": "binary"}}], "next": "y"}),
+        _FakeResp(200, {"results": [], "next": None}),
+    ]
+    calls = []
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls.append(params["offset"])
+        return pages[len(calls) - 1]
+    monkeypatch.setattr(collectors.httpx, "get", fake_get)
+    posts = collectors.fetch_posts("TOK", tournament="33022", forecaster_id=None)
+    assert [p["id"] for p in posts] == [1, 2]
+    assert calls == [0, 100, 200]  # paginated by limit=100 until empty
+
+
+def test_fetch_metaculus_coverage_builds_gap(monkeypatch):
+    open_posts = [{"id": 1, "title": "a", "question": {"id": 11, "type": "binary"}},
+                  {"id": 2, "title": "b", "question": {"id": 22, "type": "binary"}}]
+    forecast_posts = [{"id": 1, "title": "a", "question": {"id": 11, "type": "binary"}}]
+
+    def fake_fetch_posts(token, tournament, forecaster_id, **kw):
+        return forecast_posts if forecaster_id else open_posts
+    monkeypatch.setattr(collectors, "fetch_posts", fake_fetch_posts)
+    out = collectors.fetch_metaculus_coverage("TOK", ["33022"])
+    assert out["available"] is True
+    assert out["tournaments"]["33022"]["gap_count"] == 1
+
+
+def test_fetch_recent_resolved_maps_extractor(monkeypatch):
+    # lists resolved forecaster posts (ids), then fetches detail + extracts
+    def fake_fetch_posts(token, tournament, forecaster_id, statuses="open", **kw):
+        assert statuses == "resolved" and forecaster_id == 303527
+        return [{"id": 43928}] if tournament == "33022" else []
+    def fake_fetch_post_detail(token, post_id, **kw):
+        return BINARY_POST  # the resolved binary fixture from Task 3
+    monkeypatch.setattr(collectors, "fetch_posts", fake_fetch_posts)
+    monkeypatch.setattr(collectors, "fetch_post_detail", fake_fetch_post_detail)
+    out = collectors.fetch_recent_resolved("TOK", ["33022", "minibench"], limit=10)
+    assert out["available"] is True
+    assert out["resolved"][0]["resolution"] == "yes"
+    assert out["resolved"][0]["summary"] == pytestapprox(0.8217)  # via extract_own_forecast
+    assert out["resolved"][0]["score"]["peer_score"] == pytestapprox(47.17)

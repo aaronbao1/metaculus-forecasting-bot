@@ -132,3 +132,69 @@ def parse_coverage(open_posts: list[dict], forecasted_ids: set) -> dict:
         "gap_count": len(gap),
         "gap": gap,
     }
+
+
+_METACULUS_POSTS = "https://www.metaculus.com/api/posts/"
+
+
+def fetch_posts(token: str, tournament: str, forecaster_id: int | None,
+                statuses: str = "open", page_size: int = 100,
+                max_pages: int = 50, timeout: float = 15.0) -> list[dict]:
+    """Paginate /api/posts/ for one tournament (count is always null → follow offset)."""
+    results: list[dict] = []
+    for page in range(max_pages):
+        params = {"tournaments": tournament, "statuses": statuses,
+                  "limit": page_size, "offset": page * page_size}
+        if forecaster_id:
+            params["forecaster_id"] = forecaster_id
+        resp = httpx.get(_METACULUS_POSTS,
+                         headers={"Authorization": f"Token {token}"},
+                         params=params, timeout=timeout)
+        if resp.status_code != 200:
+            break
+        batch = resp.json().get("results") or []
+        results.extend(batch)
+        if not batch:
+            break
+    return results
+
+
+def fetch_metaculus_coverage(token: str, tournaments: list[str]) -> dict:
+    """Per-tournament open-vs-forecasted coverage + the gap list."""
+    if not token:
+        return {"available": False, "error": "no token"}
+    try:
+        per: dict[str, dict] = {}
+        for t in tournaments:
+            open_posts = fetch_posts(token, t, forecaster_id=None)
+            mine = fetch_posts(token, t, forecaster_id=303527)
+            per[t] = parse_coverage(open_posts, {p["id"] for p in mine})
+        return {"available": True, "tournaments": per}
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": str(exc)}
+
+
+def fetch_post_detail(token: str, post_id: int, timeout: float = 15.0) -> dict:
+    """GET one post (detail endpoint carries my_forecasts + resolution + score)."""
+    resp = httpx.get(f"{_METACULUS_POSTS}{post_id}/",
+                     headers={"Authorization": f"Token {token}"}, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def fetch_recent_resolved(token: str, tournaments: list[str], limit: int = 10) -> dict:
+    """Resolved questions mopsus forecast: our value, the outcome, and our score.
+    The closest readable signal of 'how is the bot doing' (community CP is locked,
+    but question.my_forecasts.score_data is not)."""
+    if not token:
+        return {"available": False, "error": "no token"}
+    try:
+        ids: list[int] = []
+        for t in tournaments:
+            ids += [p["id"] for p in
+                    fetch_posts(token, t, forecaster_id=303527, statuses="resolved")]
+        resolved = [extract_own_forecast(fetch_post_detail(token, pid))
+                    for pid in ids[:limit]]
+        return {"available": True, "resolved": resolved, "total": len(ids)}
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": str(exc)}
