@@ -94,3 +94,15 @@ def test_refresh_due_isolates_failures():
     st = state_mod.DashboardState({"bad": (boom, 0)})
     st.refresh_due()
     assert st.get()["panels"]["bad"]["available"] is False
+
+
+from bot.dashboard import page as page_mod
+
+
+def test_page_is_console_shell():
+    html = page_mod.PAGE_HTML
+    assert "/api/status" in html                 # still polls the endpoint
+    assert 'id="strip"' in html and 'id="grid"' in html   # metric strip + panels
+    assert "renderalerts" in html.lower() or "alerts_body" in html.lower() or "alerts" in html.lower()
+    assert "JSON.stringify" not in html          # no raw dump anymore
+    assert "#0b0e14" in html                      # the dark canvas color
