@@ -112,18 +112,29 @@ async def test_unwritable_log_does_not_fail_the_question(adapter, monkeypatch):
 
 
 async def test_cost_brake_slices_question_list(adapter, monkeypatch):
-    from forecasting_tools import BinaryQuestion, ForecastBot
+    # The cost-brake cap moved from the (removed) forecast_questions override
+    # into forecast_on_tournament; exercise it there.
     bot, cfg = adapter
     cfg.max_questions_per_run = 2
+
+    class FakeQ:
+        def __init__(self, qid):
+            self.id_of_post = qid
+            self.already_forecasted = False
+
+    async def fake_get(api_filter, **kw):
+        return [FakeQ(i) for i in range(5)]
+    monkeypatch.setattr(bot.metaculus_client, "get_questions_matching_filter",
+                        fake_get)
+
     captured = {}
 
-    async def fake_super(self, questions, return_exceptions=False):
+    async def fake_fq(questions, return_exceptions=False):
         captured["n"] = len(questions)
-        return []
+        return [f"ok-{q.id_of_post}" for q in questions]
+    monkeypatch.setattr(bot, "forecast_questions", fake_fq)
 
-    monkeypatch.setattr(ForecastBot, "forecast_questions", fake_super)
-    qs = [BinaryQuestion(question_text=f"Q{i}?") for i in range(5)]
-    await bot.forecast_questions(qs)
+    await bot.forecast_on_tournament(33022, return_exceptions=True)
     assert captured["n"] == 2
 
 

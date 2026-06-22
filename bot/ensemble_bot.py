@@ -350,16 +350,64 @@ def build_framework_bot(cfg: BotConfig | None = None):
                              question.page_url)
             return res.text
 
-        async def forecast_questions(self, questions, return_exceptions=False):
-            limit = engine.cfg.max_questions_per_run
-            if limit and len(questions) > limit:
+        async def forecast_on_tournament(self, tournament_id,
+                                         return_exceptions=False):
+            from forecasting_tools.helpers.metaculus_client import ApiFilter
+            cfg = engine.cfg
+            # (1) Paginated fetch. The framework's get_all_open_questions_from_
+            # tournament passes num_questions=None -> first 100-question page only.
+            # An explicit target walks every page; error_if_question_target_missed
+            # =False so it does NOT raise when the round has fewer questions.
+            api_filter = ApiFilter(
+                allowed_tournaments=[tournament_id],
+                allowed_statuses=["open"],
+                group_question_mode="unpack_subquestions")
+            questions = await self.metaculus_client.get_questions_matching_filter(
+                api_filter, num_questions=cfg.max_questions_to_fetch,
+                randomly_sample=False, error_if_question_target_missed=False)
+            fetched = len(questions)
+            # (2) Apply the skip filter HERE so our list aligns 1:1 with reports
+            # (the framework re-applies it idempotently). Required for the retry
+            # index mapping in Task 4.
+            if self.skip_previously_forecasted_questions:
+                questions = [q for q in questions if not q.already_forecasted]
+            after_skip = len(questions)
+            # (3) Tracked cost-brake cap (replaces the old silent slice).
+            cap = cfg.max_questions_per_run
+            truncated = 0
+            if cap and len(questions) > cap:
+                truncated = len(questions) - cap
                 logger.warning(
-                    "cost brake: %d questions exceeds max_questions_per_run="
-                    "%d; forecasting only the first %d",
-                    len(questions), limit, limit)
-                questions = list(questions)[:limit]
-            return await super().forecast_questions(
-                questions, return_exceptions=return_exceptions)
+                    "cost brake: %d forecastable questions exceeds "
+                    "max_questions_per_run=%d; forecasting first %d (%d dropped)",
+                    len(questions), cap, cap, truncated)
+                questions = list(questions)[:cap]
+            # (4) Forecast: framework fan-out + per-question publish (SUBMIT_
+            # PREDICTION gate). return_exceptions=True -> failures as objects.
+            reports = list(await self.forecast_questions(
+                questions, return_exceptions=True))
+            # (5) Stash coverage stats (retry added in the next task).
+            ok = sum(1 for r in reports if not isinstance(r, BaseException))
+            self._last_run_stats = {
+                "tournament": str(tournament_id),
+                "config_hash": engine.cfg_hash,
+                "questions_fetched": fetched,
+                "questions_after_skip": after_skip,
+                "cap": cap,
+                "truncated_count": truncated,
+                "questions_forecasted": len(questions),
+                "forecast_ok": ok,
+                "forecast_failed": len(reports) - ok,
+                "retried": 0,
+                "retry_recovered": 0,
+            }
+            # (6) Preserve the framework contract: re-raise if the caller did not
+            # ask for exceptions (run_tournament always passes True).
+            if not return_exceptions:
+                for r in reports:
+                    if isinstance(r, BaseException):
+                        raise r
+            return reports
 
         async def _run_forecast_on_binary(
                 self, question: BinaryQuestion, research: str
