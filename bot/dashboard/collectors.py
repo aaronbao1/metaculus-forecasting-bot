@@ -264,6 +264,66 @@ def fetch_recent_resolved(token: str, tournaments: list[str], limit: int = 8,
         return {"available": False, "error": str(exc)}
 
 
+_LEDGER_STATUSES = ["open", "closed", "resolved"]
+
+
+def fetch_forecast_ledger(token: str, tournaments: list[str],
+                          cache_path: str = _FORECAST_CACHE,
+                          detail_budget: int = 15) -> dict:
+    """Every question mopsus has forecast (all statuses), with our value + outcome.
+    The inventory is built from cheap list calls every cycle; per-question detail
+    (value/outcome/score) is warmed into the shared cache a bounded number per cycle,
+    so steady-state makes ~0 detail calls."""
+    if not token:
+        return {"available": False, "error": "no token"}
+    try:
+        cache = _load_cache(cache_path)
+        items: list[dict] = []
+        for t in tournaments:
+            for p in fetch_posts(token, t, forecaster_id=303527, statuses=_LEDGER_STATUSES):
+                if not _is_question_post(p):
+                    continue
+                items.append({"post_id": p["id"], "title": p.get("title"),
+                              "tournament": t,
+                              "type": (p.get("question") or {}).get("type"),
+                              "status": p.get("status")})
+        order = {"open": 0, "closed": 1, "resolved": 2}
+        items.sort(key=lambda x: (order.get(x["status"], 3), x["tournament"],
+                                  (x.get("title") or "")))
+        # bounded warmup of uncached items
+        fetched = 0
+        for it in items:
+            if fetched >= detail_budget:
+                break
+            key = str(it["post_id"])
+            if key not in cache:
+                detail = fetch_post_detail(token, it["post_id"])
+                entry = extract_own_forecast(detail)
+                entry["title"] = detail.get("title")
+                cache[key] = entry
+                fetched += 1
+        if fetched:
+            _save_cache(cache_path, cache)
+        # merge cached value/outcome onto each item
+        for it in items:
+            c = cache.get(str(it["post_id"]))
+            if isinstance(c, dict):
+                for k in ("summary", "median", "top_option"):
+                    if c.get(k) is not None:
+                        it[k] = c.get(k)
+                it["resolution"] = c.get("resolution")
+                sc = c.get("score")
+                it["peer_score"] = sc.get("peer_score") if isinstance(sc, dict) else None
+        by_status: dict[str, int] = {}
+        for it in items:
+            by_status[it["status"]] = by_status.get(it["status"], 0) + 1
+        warmed = sum(1 for it in items if str(it["post_id"]) in cache)
+        return {"available": True, "total": len(items), "by_status": by_status,
+                "warmed": warmed, "items": items}
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": str(exc)}
+
+
 _REPO = "aaronbao1/metaculus-forecasting-bot"
 
 

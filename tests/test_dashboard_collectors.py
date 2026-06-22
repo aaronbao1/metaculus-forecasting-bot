@@ -322,3 +322,56 @@ def test_cache_helpers_roundtrip(tmp_path):
     with open(p, "w") as f:
         f.write("[1,2,3]")
     assert collectors._load_cache(p) == {}                 # non-dict JSON self-heals to {}
+
+
+def test_fetch_forecast_ledger_inventory_and_bounded_warmup(monkeypatch, tmp_path):
+    cache = str(tmp_path / "fc.json")
+    monkeypatch.setattr(collectors, "_MIN_METACULUS_SPACING", 0.0)
+    LIST = {
+        "33022": [
+            {"id": 10, "title": "A open", "status": "open", "question": {"id": 110, "type": "binary"}},
+            {"id": 11, "title": "B closed", "status": "closed", "question": {"id": 111, "type": "binary"}},
+            {"id": 12, "title": "C resolved", "status": "resolved", "question": {"id": 112, "type": "binary"}},
+            {"id": 99, "title": "notebook", "status": "open", "question": None},
+        ],
+        "minibench": [
+            {"id": 20, "title": "D closed", "status": "closed", "question": {"id": 120, "type": "binary"}},
+        ],
+    }
+    def fake_posts(token, t, forecaster_id, statuses="open", **kw):
+        assert forecaster_id == 303527 and statuses == ["open", "closed", "resolved"]
+        return LIST[t]
+    detail_calls = []
+    def fake_detail(token, pid, **kw):
+        detail_calls.append(pid)
+        return {"id": pid, "title": f"detail{pid}",
+                "question": {"id": pid + 100, "type": "binary",
+                             "resolution": ("yes" if pid == 12 else None),
+                             "scaling": {"range_min": None, "range_max": None, "zero_point": None},
+                             "my_forecasts": {"latest": {"forecast_values": [0.3, 0.7], "start_time": float(pid)},
+                                              "score_data": ({"peer_score": 5.0} if pid == 12 else None)}}}
+    monkeypatch.setattr(collectors, "fetch_posts", fake_posts)
+    monkeypatch.setattr(collectors, "fetch_post_detail", fake_detail)
+
+    out = collectors.fetch_forecast_ledger("TOK", ["33022", "minibench"],
+                                           cache_path=cache, detail_budget=2)
+    assert out["available"] is True
+    assert out["total"] == 4                                # notebook excluded
+    assert out["by_status"] == {"open": 1, "closed": 2, "resolved": 1}
+    assert len(detail_calls) == 2                           # bounded by detail_budget
+    assert out["warmed"] == 2
+    warmed = [it for it in out["items"] if it.get("summary") is not None]
+    assert len(warmed) == 2 and warmed[0]["summary"] == pytestapprox(0.7)
+    # items sorted open -> closed -> resolved
+    assert [it["status"] for it in out["items"]] == ["open", "closed", "closed", "resolved"]
+
+    out2 = collectors.fetch_forecast_ledger("TOK", ["33022", "minibench"],
+                                            cache_path=cache, detail_budget=2)
+    assert len(detail_calls) == 4                           # warms the remaining 2
+    assert out2["warmed"] == 4
+
+    out3 = collectors.fetch_forecast_ledger("TOK", ["33022", "minibench"],
+                                            cache_path=cache, detail_budget=2)
+    assert len(detail_calls) == 4                           # all cached -> no new detail calls
+    resolved = [it for it in out3["items"] if it["status"] == "resolved"][0]
+    assert resolved["resolution"] == "yes" and resolved["peer_score"] == pytestapprox(5.0)
