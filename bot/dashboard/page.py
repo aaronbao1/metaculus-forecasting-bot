@@ -39,6 +39,8 @@ border-top:1px solid var(--line);font-size:13px}
 .unavail{color:var(--warn);font-size:13px}
 .muted{color:var(--muted)}
 .span2{grid-column:1/-1}
+.scroll{max-height:360px;overflow-y:auto;margin-top:4px}
+.tag{font-size:11px;color:var(--dim);font-family:var(--mono);margin-left:6px}
 .bar{height:5px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;margin-top:10px}
 .bar>span{display:block;height:100%;background:var(--accent)}
 </style></head><body>
@@ -90,6 +92,7 @@ function render(s){
  g+=panel('Armed state','',armedBody(armed));
  g+=panel('Cost detail','',costBody(cost));
  g+='<div class="span2">'+panel('Alerts','',alertsBody(P))+'</div>';
+ g+='<div class="span2">'+panel('All forecasts',ledgerMeta(P.forecasts),ledgerBody(P.forecasts))+'</div>';
  $('grid').innerHTML=g;
 }
 function covBody(c){
@@ -131,6 +134,21 @@ function alertsBody(P){const a=[];const runs=P.runs||{};
  Object.entries(P).forEach(([k,p])=>{if(p&&p.available===false)a.push(['warn',k+' data unavailable']);});
  if(!a.length)return '<div class="row"><span>'+dot('ok')+'No alerts — all nominal</span></div>';
  return a.map(([s,m])=>'<div class="row"><span>'+dot(s)+esc(m)+'</span></div>').join('');}
+const TAG={'33022':'FE','minibench':'MB'};
+function ledgerMeta(l){if(!l||!l.available)return '';return (l.total||0)+' · warmed '+(l.warmed||0)+'/'+(l.total||0);}
+function ledgerBody(l){
+ if(!l||l.available===false)return unavail(l);
+ const bs=l.by_status||{};
+ const head='<div class="row"><span class="muted">forecast history</span><span class="r">'+['open','closed','resolved'].map(s=>(bs[s]||0)+' '+s).join(' · ')+'</span></div>';
+ const rows=(l.items||[]).map(it=>{
+  const ours=fmtOurs(it)||'<span class="muted">…</span>';
+  const out=(it.status==='resolved'&&it.resolution)?(' → '+esc(it.resolution)):'';
+  const peer=(it.peer_score!=null)?(' <span class="chip" style="background:rgba(255,255,255,.06);color:'+(it.peer_score>=0?'var(--ok)':'var(--bad)')+'">peer '+(it.peer_score>=0?'+':'')+it.peer_score.toFixed(0)+'</span>'):'';
+  const sd=it.status!=='resolved'?'idle':(it.peer_score==null?'idle':(it.peer_score>=0?'ok':'bad'));
+  return '<div class="row"><span>'+dot(sd)+esc(it.title||it.post_id)+'<span class="tag">'+(TAG[it.tournament]||it.tournament)+'</span></span><span class="r">'+ours+out+peer+'</span></div>';
+ }).join('');
+ return head+'<div class="scroll">'+(rows||'<div class="muted">none</div>')+'</div>';
+}
 async function tick(){try{const r=await fetch('/api/status');render(await r.json());}catch(e){$('fresh').textContent='fetch error';}}
 function freshTick(){if(!lastGen)return;const sec=Math.max(0,Math.round((Date.now()-lastGen.getTime())/1000));$('fresh').textContent='updated '+(sec<60?sec+'s':Math.floor(sec/60)+'m')+' ago';}
 tick();setInterval(tick,10000);setInterval(freshTick,1000);

@@ -106,3 +106,9 @@ def test_page_is_console_shell():
     assert "renderalerts" in html.lower() or "alerts_body" in html.lower() or "alerts" in html.lower()
     assert "JSON.stringify" not in html          # no raw dump anymore
     assert "#0b0e14" in html                      # the dark canvas color
+
+
+def test_page_has_forecast_ledger_panel():
+    html = page_mod.PAGE_HTML
+    assert "ledgerBody" in html and "All forecasts" in html
+    assert ".scroll{" in html
