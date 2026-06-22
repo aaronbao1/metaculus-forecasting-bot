@@ -54,3 +54,61 @@ def fetch_openrouter_budget(api_key: str, timeout: float = 8.0) -> dict:
         return parse_openrouter_budget(resp.json())
     except Exception as exc:  # noqa: BLE001 - one dead source must not break the page
         return {"available": False, "error": str(exc)}
+
+
+def _unscale(scaled: float, scaling: dict) -> float:
+    """Map a scaled [0,1] value to real units (linear; log if zero_point set)."""
+    lo = scaling.get("range_min")
+    hi = scaling.get("range_max")
+    zero = scaling.get("zero_point")
+    if lo is None or hi is None:
+        return scaled
+    if zero is None:
+        return lo + scaled * (hi - lo)
+    # log scaling: value = lo + (hi-lo) * ((deriv**scaled) - 1) / (deriv - 1)
+    deriv = (hi - zero) / (lo - zero)
+    return lo + (hi - lo) * ((deriv ** scaled) - 1.0) / (deriv - 1.0)
+
+
+def extract_own_forecast(post: dict) -> dict:
+    """Read mopsus's own latest forecast + score from a post JSON (all types)."""
+    q = post.get("question") or {}
+    qtype = q.get("type")
+    mf = q.get("my_forecasts") or {}
+    latest = mf.get("latest") or {}
+    out = {
+        "post_id": post.get("id"),
+        "question_id": q.get("id"),
+        "type": qtype,
+        "status": post.get("status"),
+        "resolution": q.get("resolution"),
+        "start_time": latest.get("start_time"),
+        "score": mf.get("score_data"),
+        "summary": None,
+    }
+    fv = latest.get("forecast_values")
+    if not fv:
+        return out
+    scaling = q.get("scaling") or {}
+    if qtype == "binary":
+        out["summary"] = fv[1]
+    elif qtype in ("numeric", "date"):
+        centers = latest.get("centers") or []
+        lows = latest.get("interval_lower_bounds") or []
+        highs = latest.get("interval_upper_bounds") or []
+        if centers:
+            out["median"] = _unscale(centers[0], scaling)
+            out["summary"] = out["median"]
+        if lows:
+            out["q1"] = _unscale(lows[0], scaling)
+        if highs:
+            out["q3"] = _unscale(highs[0], scaling)
+    elif qtype == "multiple_choice":
+        options = q.get("options") or []
+        pairs = list(zip(options, fv))
+        out["options"] = pairs
+        if pairs:
+            top = max(pairs, key=lambda p: p[1])
+            out["top_option"] = top[0]
+            out["summary"] = top[0]
+    return out

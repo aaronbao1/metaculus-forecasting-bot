@@ -69,3 +69,78 @@ def test_fetch_openrouter_budget_handles_exception(monkeypatch):
     monkeypatch.setattr(collectors.httpx, "get", boom)
     out = collectors.fetch_openrouter_budget("KEY123")
     assert out["available"] is False and "error" in out
+
+
+BINARY_POST = {
+    "id": 43928, "status": "resolved",
+    "question": {
+        "id": 43954, "type": "binary", "status": "resolved", "resolution": "yes",
+        "scaling": {"range_min": None, "range_max": None, "zero_point": None},
+        "options": None,
+        "my_forecasts": {
+            "latest": {"start_time": 1781860108.943803,
+                       "forecast_values": [0.1782, 0.8217],
+                       "centers": None, "interval_lower_bounds": None,
+                       "interval_upper_bounds": None},
+            "score_data": {"peer_score": 47.17, "baseline_score": 68.30, "coverage": 0.95},
+        },
+    },
+}
+NUMERIC_POST = {
+    "id": 44123, "status": "open",
+    "question": {
+        "id": 44145, "type": "numeric", "status": "open", "resolution": None,
+        "scaling": {"range_min": 70000, "range_max": 110000, "zero_point": None},
+        "options": None,
+        "my_forecasts": {"latest": {"start_time": 1781000000.0,
+                                    "forecast_values": [0.0] * 201,
+                                    "centers": [0.6119061363500163],
+                                    "interval_lower_bounds": [0.47264666340257455],
+                                    "interval_upper_bounds": [0.7379228153543191]},
+                         "score_data": None},
+    },
+}
+MC_POST = {
+    "id": 44119, "status": "open",
+    "question": {
+        "id": 44200, "type": "multiple_choice", "status": "open", "resolution": None,
+        "scaling": {"range_min": None, "range_max": None, "zero_point": None},
+        "options": ["Zero or One", "Two or Three", "Four or more"],
+        "my_forecasts": {"latest": {"start_time": 1781000000.0,
+                                    "forecast_values": [0.3278, 0.4911, 0.1811],
+                                    "centers": None, "interval_lower_bounds": None,
+                                    "interval_upper_bounds": None},
+                         "score_data": None},
+    },
+}
+
+
+def test_extract_own_forecast_binary():
+    out = collectors.extract_own_forecast(BINARY_POST)
+    assert out["type"] == "binary"
+    assert out["summary"] == pytestapprox(0.8217)  # P(yes)
+    assert out["resolution"] == "yes"
+    assert out["start_time"] == 1781860108.943803
+    assert out["score"]["peer_score"] == pytestapprox(47.17)
+
+
+def test_extract_own_forecast_numeric_unscaled():
+    out = collectors.extract_own_forecast(NUMERIC_POST)
+    assert out["type"] == "numeric"
+    # median unscaled into [70000, 110000]
+    assert out["median"] == pytestapprox(94476, abs=1)
+    assert out["q1"] == pytestapprox(88906, abs=1)
+    assert out["q3"] == pytestapprox(99517, abs=1)
+
+
+def test_extract_own_forecast_multiple_choice():
+    out = collectors.extract_own_forecast(MC_POST)
+    assert out["type"] == "multiple_choice"
+    assert out["top_option"] == "Two or Three"
+    assert dict(out["options"])["Two or Three"] == pytestapprox(0.4911)
+
+
+def test_extract_own_forecast_no_forecast():
+    out = collectors.extract_own_forecast({"id": 1, "question": {"id": 2, "type": "binary",
+                                          "my_forecasts": {"latest": None}}})
+    assert out["summary"] is None
