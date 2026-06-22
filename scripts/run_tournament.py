@@ -58,7 +58,7 @@ async def _run_one_tournament(bot, tournament) -> list:
     """Forecast one tournament, print the summary, and persist the coverage
     run-summary. An append failure never fails the run (it already succeeded)."""
     reports = await bot.forecast_on_tournament(tournament, return_exceptions=True)
-    errors = [r for r in reports if isinstance(r, Exception)]
+    errors = [r for r in reports if isinstance(r, BaseException)]
     print(f"{tournament}: {len(reports) - len(errors)} ok, {len(errors)} failed")
     for e in errors:
         print(f"  ERROR: {e}")

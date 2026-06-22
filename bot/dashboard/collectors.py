@@ -67,10 +67,12 @@ def _unscale(scaled: float, scaling: dict) -> float:
     zero = scaling.get("zero_point")
     if lo is None or hi is None:
         return scaled
-    if zero is None:
+    if zero is None or lo == zero:
         return lo + scaled * (hi - lo)
     # log scaling: value = lo + (hi-lo) * ((deriv**scaled) - 1) / (deriv - 1)
     deriv = (hi - zero) / (lo - zero)
+    if deriv == 1:
+        return lo + scaled * (hi - lo)
     return lo + (hi - lo) * ((deriv ** scaled) - 1.0) / (deriv - 1.0)
 
 
@@ -95,7 +97,8 @@ def extract_own_forecast(post: dict) -> dict:
         return out
     scaling = q.get("scaling") or {}
     if qtype == "binary":
-        out["summary"] = fv[1]
+        if len(fv) > 1:
+            out["summary"] = fv[1]
     elif qtype in ("numeric", "date"):
         centers = latest.get("centers") or []
         lows = latest.get("interval_lower_bounds") or []
@@ -186,10 +189,11 @@ def fetch_post_detail(token: str, post_id: int, timeout: float = 15.0) -> dict:
     return resp.json()
 
 
-def fetch_recent_resolved(token: str, tournaments: list[str], limit: int = 10) -> dict:
+def fetch_recent_resolved(token: str, tournaments: list[str], limit: int = 6) -> dict:
     """Resolved questions mopsus forecast: our value, the outcome, and our score.
     The closest readable signal of 'how is the bot doing' (community CP is locked,
-    but question.my_forecasts.score_data is not)."""
+    but question.my_forecasts.score_data is not). `limit` bounds the per-refresh
+    detail-call burst — Metaculus rate-limits (429) if too many fire at once."""
     if not token:
         return {"available": False, "error": "no token"}
     try:
@@ -217,7 +221,7 @@ def _now() -> datetime:
 
 def parse_github_runs(stdout: str, now_iso: str | None = None) -> dict:
     """Shape `gh run list --json ...` output into the run-health panel."""
-    runs_raw = (__import__("json").loads(stdout) if stdout.strip() else [])
+    runs_raw = (json.loads(stdout) if stdout.strip() else [])
     now = _parse_iso(now_iso) if now_iso else _now()
     runs = []
     last_success_dt = None
@@ -290,7 +294,8 @@ def fetch_run_summary(path: str = "logs/runs.jsonl") -> dict:
     if not os.path.exists(path):
         return {"available": False}
     try:
-        rows = [json.loads(l) for l in open(path) if l.strip()]
+        with open(path) as f:
+            rows = [json.loads(l) for l in f if l.strip()]
         if not rows:
             return {"available": False}
         return {

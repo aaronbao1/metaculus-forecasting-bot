@@ -404,7 +404,7 @@ def build_framework_bot(cfg: BotConfig | None = None):
                     if not isinstance(retry_reports[j], BaseException):
                         reports[i] = retry_reports[j]
                         recovered += 1
-            # (5) Stash coverage stats (retry added in the next task).
+            # (5) Stash coverage stats for run_tournament to persist.
             ok = sum(1 for r in reports if not isinstance(r, BaseException))
             self._last_run_stats = {
                 "tournament": str(tournament_id),

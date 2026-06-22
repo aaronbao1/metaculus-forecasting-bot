@@ -10,6 +10,7 @@ from bot.dashboard.state import DashboardState
 
 def route(path: str, state: DashboardState) -> tuple[int, str, str]:
     """Pure router: path -> (status, content_type, body)."""
+    path = path.split("?", 1)[0]  # ignore cache-buster / query strings
     if path == "/" or path.startswith("/index"):
         return 200, "text/html; charset=utf-8", PAGE_HTML
     if path == "/api/status":
@@ -26,7 +27,11 @@ def make_handler(state: DashboardState):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
-            self.wfile.write(payload)
+            try:
+                self.wfile.write(payload)
+            except (BrokenPipeError, ConnectionResetError):
+                # the polling browser hung up mid-write; not an error
+                pass
 
         def log_message(self, *args):  # silence default stderr logging
             pass
