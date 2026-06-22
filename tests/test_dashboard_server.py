@@ -21,3 +21,28 @@ def test_state_get_is_copy():
     st.refresh_once()
     st.get()["panels"]["x"]["a"] = 999
     assert st.get()["panels"]["x"]["a"] == 1               # external mutation can't poison cache
+
+
+import json
+from bot.dashboard import server as server_mod
+
+
+def test_route_status_returns_json():
+    st = state_mod.DashboardState(collectors_map={"x": lambda: {"a": 1}}, interval=999)
+    st.refresh_once()
+    status, ctype, body = server_mod.route("/api/status", st)
+    assert status == 200 and "application/json" in ctype
+    assert json.loads(body)["panels"]["x"]["a"] == 1
+
+
+def test_route_root_returns_html():
+    st = state_mod.DashboardState(collectors_map={}, interval=999)
+    status, ctype, body = server_mod.route("/", st)
+    assert status == 200 and "text/html" in ctype
+    assert "<html" in body.lower() and "/api/status" in body  # page polls the endpoint
+
+
+def test_route_unknown_404():
+    st = state_mod.DashboardState(collectors_map={}, interval=999)
+    status, _, _ = server_mod.route("/nope", st)
+    assert status == 404
