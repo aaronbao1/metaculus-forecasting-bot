@@ -312,3 +312,13 @@ def test_fetch_run_summary_aggregates(tmp_path):
     assert out["available"] is True
     assert out["total_truncated"] == 3
     assert out["latest"]["truncated_count"] == 3
+
+
+def test_cache_helpers_roundtrip(tmp_path):
+    p = str(tmp_path / "fc.json")
+    assert collectors._load_cache(p) == {}                 # missing -> {}
+    collectors._save_cache(p, {"1": {"x": 1}})
+    assert collectors._load_cache(p) == {"1": {"x": 1}}
+    with open(p, "w") as f:
+        f.write("[1,2,3]")
+    assert collectors._load_cache(p) == {}                 # non-dict JSON self-heals to {}

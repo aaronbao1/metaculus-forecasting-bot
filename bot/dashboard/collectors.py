@@ -212,10 +212,10 @@ def fetch_post_detail(token: str, post_id: int, timeout: float = 15.0) -> dict:
     return resp.json()
 
 
-_RESOLVED_CACHE = "logs/dashboard_resolved_cache.json"
+_FORECAST_CACHE = "logs/dashboard_forecast_cache.json"
 
 
-def _load_resolved_cache(path: str) -> dict:
+def _load_cache(path: str) -> dict:
     if not os.path.exists(path):
         return {}
     try:
@@ -226,7 +226,7 @@ def _load_resolved_cache(path: str) -> dict:
         return {}
 
 
-def _save_resolved_cache(path: str, data: dict) -> None:
+def _save_cache(path: str, data: dict) -> None:
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "w") as f:
@@ -236,14 +236,14 @@ def _save_resolved_cache(path: str, data: dict) -> None:
 
 
 def fetch_recent_resolved(token: str, tournaments: list[str], limit: int = 8,
-                          cache_path: str = _RESOLVED_CACHE) -> dict:
+                          cache_path: str = _FORECAST_CACHE) -> dict:
     """Resolved questions mopsus forecast: our value, the outcome, our score.
     Resolved questions are immutable, so detail is fetched once and cached to disk;
     steady-state this makes ~0 detail calls (the calls that rate-limit us)."""
     if not token:
         return {"available": False, "error": "no token"}
     try:
-        cache = _load_resolved_cache(cache_path)
+        cache = _load_cache(cache_path)
         ids: list[int] = []
         for t in tournaments:
             ids += [p["id"] for p in
@@ -255,7 +255,7 @@ def fetch_recent_resolved(token: str, tournaments: list[str], limit: int = 8,
             entry["title"] = detail.get("title")
             cache[str(pid)] = entry
         if new:
-            _save_resolved_cache(cache_path, cache)
+            _save_cache(cache_path, cache)
         entries = [cache[str(pid)] for pid in ids
                    if str(pid) in cache and isinstance(cache[str(pid)], dict)]
         entries.sort(key=lambda e: e.get("start_time") or 0, reverse=True)
