@@ -8,6 +8,8 @@ secrets (API keys, account ids).
 """
 from __future__ import annotations
 
+import subprocess
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -196,5 +198,86 @@ def fetch_recent_resolved(token: str, tournaments: list[str], limit: int = 10) -
         resolved = [extract_own_forecast(fetch_post_detail(token, pid))
                     for pid in ids[:limit]]
         return {"available": True, "resolved": resolved, "total": len(ids)}
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": str(exc)}
+
+
+_REPO = "aaronbao1/metaculus-forecasting-bot"
+
+
+def _parse_iso(s: str) -> datetime:
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def parse_github_runs(stdout: str, now_iso: str | None = None) -> dict:
+    """Shape `gh run list --json ...` output into the run-health panel."""
+    runs_raw = (__import__("json").loads(stdout) if stdout.strip() else [])
+    now = _parse_iso(now_iso) if now_iso else _now()
+    runs = []
+    last_success_dt = None
+    failures = 0
+    for r in runs_raw:
+        started = _parse_iso(r["startedAt"]) if r.get("startedAt") else None
+        updated = _parse_iso(r["updatedAt"]) if r.get("updatedAt") else None
+        dur = int((updated - started).total_seconds()) if started and updated else None
+        if r.get("conclusion") == "failure":
+            failures += 1
+        if r.get("conclusion") == "success" and last_success_dt is None:
+            last_success_dt = updated
+        runs.append({
+            "id": r.get("databaseId"), "event": r.get("event"),
+            "conclusion": r.get("conclusion"), "status": r.get("status"),
+            "created_at": r.get("createdAt"), "duration_s": dur,
+        })
+    last_min = (int((now - last_success_dt).total_seconds() // 60)
+                if last_success_dt else None)
+    return {
+        "available": True, "runs": runs,
+        "recent_failures": failures,
+        "last_success_minutes_ago": last_min,
+        "cadence_stale": (last_min is not None and last_min > 40),
+    }
+
+
+def fetch_github_runs(limit: int = 15, now_iso: str | None = None) -> dict:
+    """Run `gh run list` for the run-bot workflow; sentinel on any failure."""
+    try:
+        cp = subprocess.run(
+            ["gh", "run", "list", "--workflow", "run-bot", "--repo", _REPO,
+             "-L", str(limit), "--json",
+             "databaseId,status,conclusion,createdAt,startedAt,updatedAt,event"],
+            capture_output=True, text=True, timeout=20,
+        )
+        if cp.returncode != 0:
+            return {"available": False, "error": "gh nonzero"}
+        return parse_github_runs(cp.stdout, now_iso=now_iso)
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": str(exc)}
+
+
+def fetch_armed_state() -> dict:
+    """Workflow active?, SUBMIT_PREDICTION var, secret names present."""
+    try:
+        def _gh(args):
+            return subprocess.run(["gh", *args, "--repo", _REPO],
+                                  capture_output=True, text=True, timeout=20)
+        wf = _gh(["workflow", "list"])
+        var = _gh(["variable", "list"])
+        sec = _gh(["secret", "list"])
+        submit = None
+        for line in var.stdout.splitlines():
+            if line.startswith("SUBMIT_PREDICTION"):
+                submit = line.split()[1] if len(line.split()) > 1 else None
+        return {
+            "available": True,
+            "run_bot_active": any(
+                l.startswith("run-bot") and "active" in l for l in wf.stdout.splitlines()),
+            "submit_prediction": submit,
+            "secrets": [l.split()[0] for l in sec.stdout.splitlines() if l.strip()],
+        }
     except Exception as exc:  # noqa: BLE001
         return {"available": False, "error": str(exc)}

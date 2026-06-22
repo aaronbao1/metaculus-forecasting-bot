@@ -210,3 +210,40 @@ def test_fetch_recent_resolved_maps_extractor(monkeypatch):
     assert out["resolved"][0]["resolution"] == "yes"
     assert out["resolved"][0]["summary"] == pytestapprox(0.8217)  # via extract_own_forecast
     assert out["resolved"][0]["score"]["peer_score"] == pytestapprox(47.17)
+
+
+import json as _json
+
+GH_RUNS_JSON = _json.dumps([
+    {"databaseId": 1, "status": "completed", "conclusion": "success",
+     "createdAt": "2026-06-22T16:08:35Z", "startedAt": "2026-06-22T16:08:35Z",
+     "updatedAt": "2026-06-22T16:09:57Z", "event": "schedule"},
+    {"databaseId": 2, "status": "completed", "conclusion": "failure",
+     "createdAt": "2026-06-22T11:22:31Z", "startedAt": "2026-06-22T11:22:31Z",
+     "updatedAt": "2026-06-22T11:25:36Z", "event": "schedule"},
+])
+
+
+def test_parse_github_runs():
+    out = collectors.parse_github_runs(GH_RUNS_JSON, now_iso="2026-06-22T16:20:00Z")
+    assert out["available"] is True
+    assert out["runs"][0]["conclusion"] == "success"
+    assert out["runs"][0]["duration_s"] == 82      # 16:09:57 - 16:08:35
+    assert out["last_success_minutes_ago"] == 10    # floor((16:20:00 - 16:09:57)/60)
+    assert out["recent_failures"] == 1
+
+
+def test_fetch_github_runs_shells_gh(monkeypatch):
+    class _CP:
+        returncode = 0
+        stdout = GH_RUNS_JSON
+    monkeypatch.setattr(collectors.subprocess, "run", lambda *a, **k: _CP())
+    out = collectors.fetch_github_runs(now_iso="2026-06-22T16:20:00Z")
+    assert out["available"] is True and len(out["runs"]) == 2
+
+
+def test_fetch_github_runs_handles_gh_failure(monkeypatch):
+    def boom(*a, **k):
+        raise FileNotFoundError("gh not installed")
+    monkeypatch.setattr(collectors.subprocess, "run", boom)
+    assert collectors.fetch_github_runs()["available"] is False
