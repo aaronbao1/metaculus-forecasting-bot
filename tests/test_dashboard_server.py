@@ -46,3 +46,24 @@ def test_route_unknown_404():
     st = state_mod.DashboardState(collectors_map={}, interval=999)
     status, _, _ = server_mod.route("/nope", st)
     assert status == 404
+
+
+import importlib.util, pathlib
+
+
+def _load_dashboard_script():
+    path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "dashboard.py"
+    spec = importlib.util.spec_from_file_location("dashboard_script", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_build_collectors_map_wires_sources(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "KEY")
+    monkeypatch.setenv("METACULUS_TOKEN", "TOK")
+    mod = _load_dashboard_script()
+    cmap = mod.build_collectors_map()
+    assert set(cmap) >= {"cost", "coverage", "resolved", "runs", "armed", "run_summary"}
+    # each entry is callable with no args
+    assert all(callable(fn) for fn in cmap.values())
