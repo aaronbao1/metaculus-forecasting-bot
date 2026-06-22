@@ -15,3 +15,20 @@ def test_append_and_read_roundtrip(tmp_path):
 
 def test_read_missing_file_returns_empty(tmp_path):
     assert read_forecasts(tmp_path / "nope.jsonl") == []
+
+
+from bot.logging_store import append_run, read_runs
+
+
+def test_append_and_read_runs_roundtrip(tmp_path):
+    p = tmp_path / "runs.jsonl"
+    append_run({"tournament": "33022", "truncated_count": 0}, p)
+    append_run({"tournament": "minibench", "truncated_count": 3}, p)
+    rows = read_runs(p)
+    assert [r["tournament"] for r in rows] == ["33022", "minibench"]
+    assert rows[1]["truncated_count"] == 3
+    assert "logged_at" in rows[0]          # timestamp injected like append_forecast
+
+
+def test_read_runs_missing_file(tmp_path):
+    assert read_runs(tmp_path / "nope.jsonl") == []
