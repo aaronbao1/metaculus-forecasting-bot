@@ -87,3 +87,17 @@ def test_from_member_forecasts_honors_n_trim_and_extremize(tmp_path):
     assert art.error is None
     expected = cap(extremize(geometric_mean_of_odds(probs), 2.0))
     assert art.forecast.binary_prob == pytest.approx(expected, abs=1e-9)
+
+
+def test_coverage_fields_defaults():
+    cfg = BotConfig()
+    assert cfg.max_questions_per_run == 200        # raised from 50
+    assert cfg.max_questions_to_fetch == 500
+    assert cfg.forecast_retry_attempts == 2
+
+
+def test_coverage_fields_perturb_config_hash():
+    base = config_hash(BotConfig())
+    assert config_hash(BotConfig(max_questions_to_fetch=999)) != base
+    assert config_hash(BotConfig(forecast_retry_attempts=5)) != base
+    assert config_hash(BotConfig(max_questions_per_run=50)) != base

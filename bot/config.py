@@ -62,7 +62,19 @@ class BotConfig:
     research_timeout_s: float = 300.0
     search_model: str = "perplexity/sonar-pro"     # via OpenRouter
     parser_model: str = "openai/gpt-5.4-mini"      # cheap reprompt/repair calls
-    max_questions_per_run: int = 50                # cost brake
+    # Cost-brake cap on questions forecast PER RUN. Raised from 50 so realistic
+    # tournament rounds are never silently truncated; if it ever binds, the
+    # forecast_on_tournament override records truncated_count to logs/runs.jsonl.
+    max_questions_per_run: int = 200
+    # Open-question fetch target. The framework default (num_questions=None) grabs
+    # only the first 100-question page; this drives full pagination so a round
+    # with >100 open questions is fully fetched.
+    max_questions_to_fetch: int = 500
+    # Immediate in-run retries for questions that fail transiently (e.g. a 402 or
+    # timeout left <min_members survivors). 0 disables; failures then wait for the
+    # next cron. Publish is the last per-question step, so a retried question never
+    # double-publishes.
+    forecast_retry_attempts: int = 2
     calibration_dir: str = "calibration"
     log_path: str = "logs/forecasts.jsonl"
     # Backtesting (Retrocast): pretend "today" is this instant everywhere a
