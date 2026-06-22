@@ -212,21 +212,52 @@ def fetch_post_detail(token: str, post_id: int, timeout: float = 15.0) -> dict:
     return resp.json()
 
 
-def fetch_recent_resolved(token: str, tournaments: list[str], limit: int = 6) -> dict:
-    """Resolved questions mopsus forecast: our value, the outcome, and our score.
-    The closest readable signal of 'how is the bot doing' (community CP is locked,
-    but question.my_forecasts.score_data is not). `limit` bounds the per-refresh
-    detail-call burst — Metaculus rate-limits (429) if too many fire at once."""
+_RESOLVED_CACHE = "logs/dashboard_resolved_cache.json"
+
+
+def _load_resolved_cache(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001 - a corrupt cache must never break the panel
+        return {}
+
+
+def _save_resolved_cache(path: str, data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(data, f)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def fetch_recent_resolved(token: str, tournaments: list[str], limit: int = 8,
+                          cache_path: str = _RESOLVED_CACHE) -> dict:
+    """Resolved questions mopsus forecast: our value, the outcome, our score.
+    Resolved questions are immutable, so detail is fetched once and cached to disk;
+    steady-state this makes ~0 detail calls (the calls that rate-limit us)."""
     if not token:
         return {"available": False, "error": "no token"}
     try:
+        cache = _load_resolved_cache(cache_path)
         ids: list[int] = []
         for t in tournaments:
             ids += [p["id"] for p in
                     fetch_posts(token, t, forecaster_id=303527, statuses="resolved")]
-        resolved = [extract_own_forecast(fetch_post_detail(token, pid))
-                    for pid in ids[:limit]]
-        return {"available": True, "resolved": resolved, "total": len(ids)}
+        new = [pid for pid in ids if str(pid) not in cache]
+        for pid in new:
+            detail = fetch_post_detail(token, pid)
+            entry = extract_own_forecast(detail)
+            entry["title"] = detail.get("title")
+            cache[str(pid)] = entry
+        if new:
+            _save_resolved_cache(cache_path, cache)
+        entries = [cache[str(pid)] for pid in ids if str(pid) in cache]
+        entries.sort(key=lambda e: e.get("start_time") or 0, reverse=True)
+        return {"available": True, "resolved": entries[:limit], "total": len(cache)}
     except Exception as exc:  # noqa: BLE001
         return {"available": False, "error": str(exc)}
 
