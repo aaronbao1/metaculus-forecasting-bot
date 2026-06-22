@@ -386,6 +386,24 @@ def build_framework_bot(cfg: BotConfig | None = None):
             # PREDICTION gate). return_exceptions=True -> failures as objects.
             reports = list(await self.forecast_questions(
                 questions, return_exceptions=True))
+            # Retry transient failures (e.g. a 402/timeout left <min_members
+            # survivors). Publish is the LAST per-question step, so a failed
+            # question never published -> retrying cannot double-publish. Index
+            # alignment holds because we skip-filtered before forecasting.
+            retried = 0
+            recovered = 0
+            for _ in range(cfg.forecast_retry_attempts):
+                failed_idx = [i for i, r in enumerate(reports)
+                              if isinstance(r, BaseException)]
+                if not failed_idx:
+                    break
+                retried += len(failed_idx)
+                retry_reports = await self.forecast_questions(
+                    [questions[i] for i in failed_idx], return_exceptions=True)
+                for j, i in enumerate(failed_idx):
+                    if not isinstance(retry_reports[j], BaseException):
+                        reports[i] = retry_reports[j]
+                        recovered += 1
             # (5) Stash coverage stats (retry added in the next task).
             ok = sum(1 for r in reports if not isinstance(r, BaseException))
             self._last_run_stats = {
@@ -398,8 +416,8 @@ def build_framework_bot(cfg: BotConfig | None = None):
                 "questions_forecasted": len(questions),
                 "forecast_ok": ok,
                 "forecast_failed": len(reports) - ok,
-                "retried": 0,
-                "retry_recovered": 0,
+                "retried": retried,
+                "retry_recovered": recovered,
             }
             # (6) Preserve the framework contract: re-raise if the caller did not
             # ask for exceptions (run_tournament always passes True).

@@ -83,3 +83,46 @@ async def test_raises_when_not_return_exceptions(monkeypatch):
     monkeypatch.setattr(bot, "forecast_questions", fake_fq)
     with pytest.raises(RuntimeError, match="boom"):
         await bot.forecast_on_tournament(33022, return_exceptions=False)
+
+
+async def test_retries_transient_failures(monkeypatch):
+    cfg = BotConfig(max_questions_per_run=50, forecast_retry_attempts=2)
+    bot = _bot(cfg)
+    async def fake_get(api_filter, **kw):
+        return [FakeQ(1), FakeQ(2), FakeQ(3)]
+    monkeypatch.setattr(bot.metaculus_client, "get_questions_matching_filter", fake_get)
+
+    calls = {"n": 0}
+    async def fake_fq(questions, return_exceptions=False):
+        calls["n"] += 1
+        out = []
+        for q in questions:
+            if q.id_of_post == 2 and calls["n"] == 1:   # q2 fails only first time
+                out.append(RuntimeError("transient"))
+            else:
+                out.append(f"ok-{q.id_of_post}")
+        return out
+    monkeypatch.setattr(bot, "forecast_questions", fake_fq)
+
+    reports = await bot.forecast_on_tournament(33022, return_exceptions=True)
+    assert reports == ["ok-1", "ok-2", "ok-3"]      # q2 recovered, spliced in order
+    s = bot._last_run_stats
+    assert s["retried"] == 1 and s["retry_recovered"] == 1
+    assert s["forecast_failed"] == 0
+
+
+async def test_unrecovered_failure_stays_exception(monkeypatch):
+    cfg = BotConfig(forecast_retry_attempts=1)
+    bot = _bot(cfg)
+    async def fake_get(api_filter, **kw):
+        return [FakeQ(1), FakeQ(2)]
+    monkeypatch.setattr(bot.metaculus_client, "get_questions_matching_filter", fake_get)
+    async def fake_fq(questions, return_exceptions=False):
+        return [RuntimeError("always") if q.id_of_post == 2 else f"ok-{q.id_of_post}"
+                for q in questions]
+    monkeypatch.setattr(bot, "forecast_questions", fake_fq)
+    reports = await bot.forecast_on_tournament(33022, return_exceptions=True)
+    assert reports[0] == "ok-1"
+    assert isinstance(reports[1], BaseException)
+    assert bot._last_run_stats["forecast_failed"] == 1
+    assert bot._last_run_stats["retried"] == 1 and bot._last_run_stats["retry_recovered"] == 0
