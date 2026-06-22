@@ -235,6 +235,23 @@ def test_fetch_recent_resolved_reads_shared_cache(monkeypatch, tmp_path):
     assert out["resolved"][0]["summary"] == pytestapprox(0.82)
 
 
+def test_fetch_forecast_ledger_survives_detail_429(monkeypatch, tmp_path):
+    # a rate-limited detail call must NOT fail the panel — inventory still returns
+    cache = str(tmp_path / "fc.json")
+    monkeypatch.setattr(collectors, "_MIN_METACULUS_SPACING", 0.0)
+    def fake_posts(token, t, forecaster_id, statuses="open", **kw):
+        return [{"id": 7, "title": "Q", "status": "open",
+                 "question": {"id": 70, "type": "binary"}}] if t == "33022" else []
+    def boom_detail(*a, **k):
+        raise RuntimeError("429 Too Many Requests")
+    monkeypatch.setattr(collectors, "fetch_posts", fake_posts)
+    monkeypatch.setattr(collectors, "fetch_post_detail", boom_detail)
+    out = collectors.fetch_forecast_ledger("TOK", ["33022", "minibench"],
+                                           cache_path=cache, detail_budget=5)
+    assert out["available"] is True                    # not failed
+    assert out["total"] == 1 and out["warmed"] == 0    # inventory shown, value unwarmed
+
+
 def test_fetch_recent_resolved_skips_uncached(monkeypatch, tmp_path):
     # ids not yet warmed in the cache are omitted — never a detail fetch here
     cache = str(tmp_path / "fc.json")

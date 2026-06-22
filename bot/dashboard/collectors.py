@@ -297,7 +297,11 @@ def fetch_forecast_ledger(token: str, tournaments: list[str],
                 break
             key = str(it["post_id"])
             if key not in cache:
-                detail = fetch_post_detail(token, it["post_id"])
+                try:
+                    detail = fetch_post_detail(token, it["post_id"])
+                except Exception:  # noqa: BLE001 - rate-limited/transient detail call
+                    break          # stop warming this cycle; inventory still returns,
+                                   # the rest warm next cycle. Never fail the panel.
                 entry = extract_own_forecast(detail)
                 entry["title"] = detail.get("title")
                 cache[key] = entry
