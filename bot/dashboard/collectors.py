@@ -220,7 +220,8 @@ def _load_resolved_cache(path: str) -> dict:
         return {}
     try:
         with open(path) as f:
-            return json.load(f)
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001 - a corrupt cache must never break the panel
         return {}
 
