@@ -112,3 +112,23 @@ def extract_own_forecast(post: dict) -> dict:
             out["top_option"] = top[0]
             out["summary"] = top[0]
     return out
+
+
+def _is_question_post(post: dict) -> bool:
+    return post.get("question") is not None
+
+
+def parse_coverage(open_posts: list[dict], forecasted_ids: set) -> dict:
+    """open questions minus the ones mopsus has forecast = the coverage gap."""
+    questions = [p for p in open_posts if _is_question_post(p)]
+    gap = [
+        {"post_id": p["id"], "title": p.get("title"),
+         "type": (p.get("question") or {}).get("type")}
+        for p in questions if p["id"] not in forecasted_ids
+    ]
+    return {
+        "open_count": len(questions),
+        "forecasted_count": sum(1 for p in questions if p["id"] in forecasted_ids),
+        "gap_count": len(gap),
+        "gap": gap,
+    }

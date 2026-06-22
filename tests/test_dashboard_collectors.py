@@ -144,3 +144,23 @@ def test_extract_own_forecast_no_forecast():
     out = collectors.extract_own_forecast({"id": 1, "question": {"id": 2, "type": "binary",
                                           "my_forecasts": {"latest": None}}})
     assert out["summary"] is None
+
+
+def test_parse_coverage_computes_gap():
+    open_posts = [
+        {"id": 1, "title": "Q1", "question": {"id": 11, "type": "binary"}},
+        {"id": 2, "title": "Q2", "question": {"id": 22, "type": "numeric"}},
+        {"id": 3, "title": "Notebook", "question": None, "notebook": {}},  # excluded
+    ]
+    forecasted_ids = {1}
+    out = collectors.parse_coverage(open_posts, forecasted_ids)
+    assert out["open_count"] == 2          # notebook excluded
+    assert out["forecasted_count"] == 1
+    assert out["gap_count"] == 1
+    assert out["gap"] == [{"post_id": 2, "title": "Q2", "type": "numeric"}]
+
+
+def test_parse_coverage_no_gap():
+    open_posts = [{"id": 1, "title": "Q1", "question": {"id": 11, "type": "binary"}}]
+    out = collectors.parse_coverage(open_posts, {1})
+    assert out["gap_count"] == 0 and out["gap"] == []
