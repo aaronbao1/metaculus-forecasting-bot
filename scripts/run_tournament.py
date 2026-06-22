@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 
 from bot.config import DEFAULT_CONFIG
 from bot.ensemble_bot import build_framework_bot
-from bot.logging_store import read_forecasts
+from bot.logging_store import append_run, read_forecasts
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,23 @@ def post_run_snapshot(records: list[dict],
         logger.exception("post-run snapshot failed (tournament run unaffected)")
 
 
+async def _run_one_tournament(bot, tournament) -> list:
+    """Forecast one tournament, print the summary, and persist the coverage
+    run-summary. An append failure never fails the run (it already succeeded)."""
+    reports = await bot.forecast_on_tournament(tournament, return_exceptions=True)
+    errors = [r for r in reports if isinstance(r, Exception)]
+    print(f"{tournament}: {len(reports) - len(errors)} ok, {len(errors)} failed")
+    for e in errors:
+        print(f"  ERROR: {e}")
+    stats = getattr(bot, "_last_run_stats", None)
+    if stats:
+        try:
+            append_run(stats)
+        except Exception:
+            logger.exception("run-summary append failed (run unaffected)")
+    return reports
+
+
 async def main() -> list[dict]:
     """Run the tournament and return only the records appended by this run."""
     from forecasting_tools import MetaculusApi
@@ -61,13 +78,7 @@ async def main() -> list[dict]:
     bot = build_framework_bot(DEFAULT_CONFIG)
     for tournament in (MetaculusApi.CURRENT_AI_COMPETITION_ID,
                        MetaculusApi.CURRENT_MINIBENCH_ID):
-        reports = await bot.forecast_on_tournament(
-            tournament, return_exceptions=True)
-        errors = [r for r in reports if isinstance(r, Exception)]
-        print(f"{tournament}: {len(reports) - len(errors)} ok, "
-              f"{len(errors)} failed")
-        for e in errors:
-            print(f"  ERROR: {e}")
+        await _run_one_tournament(bot, tournament)
     # Only the records appended by THIS run (the log is append-only).
     return read_forecasts(DEFAULT_CONFIG.log_path)[n_before:]
 
