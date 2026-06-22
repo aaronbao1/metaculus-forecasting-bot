@@ -233,3 +233,10 @@ tests/          pytest suite (Gate A)
 FORECASTING-BOT-RESEARCH.md      strategy/research synthesis
 research-notes/05-metaculus-mechanics.md   exact scoring + submission mechanics
 ```
+
+## Live dashboard
+Run manually: `.venv/bin/python scripts/dashboard.py` → http://127.0.0.1:8787
+Always-on (launchd):
+  cp deploy/com.aaron.metaculus-bot-dashboard.plist ~/Library/LaunchAgents/
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aaron.metaculus-bot-dashboard.plist
+Stop: `launchctl bootout gui/$(id -u)/com.aaron.metaculus-bot-dashboard`
