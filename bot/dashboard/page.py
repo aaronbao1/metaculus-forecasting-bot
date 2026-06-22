@@ -78,7 +78,7 @@ function render(s){
  $('strip').innerHTML=
    kpi('Status',down?'Down':(degraded?'Degraded':'Live'),
        armed.run_bot_active?(armed.submit_prediction==='true'?'armed · submitting':'armed · dry-run'):'workflow off',DOT[st])
-  +kpi('Cost · week',usd(cost.window_used),cost.available?('of '+usd(cost.limit)+' · '+pct(cost.pct_used)):'unavailable',costColor)
+  +kpi('Cost · '+(({weekly:'week',daily:'day',monthly:'month'})[cost.limit_reset]||'week'),usd(cost.window_used),cost.available?('of '+usd(cost.limit)+' · '+pct(cost.pct_used)):'unavailable',costColor)
   +kpi('Coverage gap',(P.coverage&&P.coverage.available)?String(gap):'—',
        (P.coverage&&P.coverage.available)?(open+' open now'):'unavailable',gap>0?'var(--bad)':'var(--ok)')
   +kpi('Last run',last?fmtZ(last.created_at):'—',last?((last.conclusion||'?')+' · '+dur(last.duration_s)):'no runs',
@@ -105,7 +105,7 @@ function runsBody(r){if(!r||r.available===false)return unavail(r);
  return (r.runs||[]).slice(0,6).map(x=>'<div class="row"><span class="r">'+fmtZ(x.created_at)+'</span><span>'+dot(x.conclusion==='success'?'ok':(x.conclusion?'bad':'idle'))+(x.conclusion||x.status||'?')+' · '+dur(x.duration_s)+'</span></div>').join('')||'<div class="muted">no runs</div>';}
 function resolvedMeta(r){if(!r||!r.available)return '';const sc=(r.resolved||[]).map(x=>x.score&&x.score.peer_score).filter(v=>v!=null);if(!sc.length)return (r.total||0)+' total';const a=sc.reduce((x,y)=>x+y,0)/sc.length;return 'peer avg '+(a>=0?'+':'')+a.toFixed(0);}
 function fmtOurs(x){if(x.type==='binary'&&x.summary!=null)return 'we said '+Math.round(x.summary*100)+'%';
- if((x.type==='numeric'||x.type==='date')&&x.median!=null)return 'we said '+Number(x.median).toLocaleString();
+ if((x.type==='numeric'||x.type==='date')&&x.median!=null)return 'we said '+Math.round(x.median).toLocaleString();
  if(x.type==='multiple_choice'&&x.top_option)return 'we said '+esc(x.top_option);return '';}
 function resolvedBody(r){if(!r||r.available===false)return unavail(r);
  const rows=(r.resolved||[]).slice(0,6);if(!rows.length)return '<div class="muted">none resolved yet</div>';
