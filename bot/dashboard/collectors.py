@@ -8,6 +8,8 @@ secrets (API keys, account ids).
 """
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 from datetime import datetime, timezone
 from typing import Any
@@ -278,6 +280,25 @@ def fetch_armed_state() -> dict:
                 l.startswith("run-bot") and "active" in l for l in wf.stdout.splitlines()),
             "submit_prediction": submit,
             "secrets": [l.split()[0] for l in sec.stdout.splitlines() if l.strip()],
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": str(exc)}
+
+
+def fetch_run_summary(path: str = "logs/runs.jsonl") -> dict:
+    """Aggregate the run-summary JSONL (truncation/retry signal)."""
+    if not os.path.exists(path):
+        return {"available": False}
+    try:
+        rows = [json.loads(l) for l in open(path) if l.strip()]
+        if not rows:
+            return {"available": False}
+        return {
+            "available": True,
+            "total_truncated": sum(r.get("truncated_count", 0) for r in rows),
+            "total_recovered": sum(r.get("retry_recovered", 0) for r in rows),
+            "latest": rows[-1],
+            "count": len(rows),
         }
     except Exception as exc:  # noqa: BLE001
         return {"available": False, "error": str(exc)}

@@ -247,3 +247,20 @@ def test_fetch_github_runs_handles_gh_failure(monkeypatch):
         raise FileNotFoundError("gh not installed")
     monkeypatch.setattr(collectors.subprocess, "run", boom)
     assert collectors.fetch_github_runs()["available"] is False
+
+
+def test_fetch_run_summary_absent(tmp_path):
+    out = collectors.fetch_run_summary(str(tmp_path / "missing.jsonl"))
+    assert out["available"] is False
+
+
+def test_fetch_run_summary_aggregates(tmp_path):
+    p = tmp_path / "runs.jsonl"
+    p.write_text(
+        '{"tournament":"33022","truncated_count":0,"forecast_failed":1,"retry_recovered":1}\n'
+        '{"tournament":"33022","truncated_count":3,"forecast_failed":0,"retry_recovered":0}\n'
+    )
+    out = collectors.fetch_run_summary(str(p))
+    assert out["available"] is True
+    assert out["total_truncated"] == 3
+    assert out["latest"]["truncated_count"] == 3
