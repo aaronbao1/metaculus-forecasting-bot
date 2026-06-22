@@ -63,7 +63,7 @@ def test_build_collectors_map_wires_sources(monkeypatch):
     monkeypatch.setenv("METACULUS_TOKEN", "TOK")
     mod = _load_dashboard_script()
     cmap = mod.build_collectors_map()
-    assert set(cmap) >= {"cost", "coverage", "resolved", "runs", "armed", "run_summary"}
+    assert set(cmap) >= {"cost", "coverage", "resolved", "forecasts", "runs", "armed", "run_summary"}
     for spec in cmap.values():
         fn, interval = spec
         assert callable(fn) and interval > 0

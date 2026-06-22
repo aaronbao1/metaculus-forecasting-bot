@@ -35,6 +35,7 @@ def build_collectors_map() -> dict:
         "armed": (lambda: collectors.fetch_armed_state(), 120),
         "coverage": (lambda: collectors.fetch_metaculus_coverage(mc_token, TOURNAMENTS), 300),
         "resolved": (lambda: collectors.fetch_recent_resolved(mc_token, TOURNAMENTS), 1800),
+        "forecasts": (lambda: collectors.fetch_forecast_ledger(mc_token, TOURNAMENTS), 120),
     }
 
 
