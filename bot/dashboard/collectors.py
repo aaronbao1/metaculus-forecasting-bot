@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
+
 
 def parse_openrouter_budget(payload: Any) -> dict:
     """Derive the cost panel from a GET /api/v1/auth/key response body."""
@@ -35,3 +37,20 @@ def parse_openrouter_budget(payload: Any) -> dict:
         "lifetime": data.get("usage"),
         "pct_used": pct_used,
     }
+
+
+def fetch_openrouter_budget(api_key: str, timeout: float = 8.0) -> dict:
+    """GET the OpenRouter key usage; never raise — return a sentinel on failure."""
+    if not api_key:
+        return {"available": False, "error": "no api key"}
+    try:
+        resp = httpx.get(
+            "https://openrouter.ai/api/v1/auth/key",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            return {"available": False, "error": f"http {resp.status_code}"}
+        return parse_openrouter_budget(resp.json())
+    except Exception as exc:  # noqa: BLE001 - one dead source must not break the page
+        return {"available": False, "error": str(exc)}
