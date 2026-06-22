@@ -7,8 +7,7 @@ def test_state_refresh_isolates_failures():
         return {"available": True, "v": 1}
     def bad():
         raise RuntimeError("boom")
-    st = state_mod.DashboardState(collectors_map={"good": good, "bad": bad},
-                                  interval=999)
+    st = state_mod.DashboardState({"good": good, "bad": bad})
     st.refresh_once()
     snap = st.get()
     assert snap["panels"]["good"] == {"available": True, "v": 1}
@@ -17,7 +16,7 @@ def test_state_refresh_isolates_failures():
 
 
 def test_state_get_is_copy():
-    st = state_mod.DashboardState(collectors_map={"x": lambda: {"a": 1}}, interval=999)
+    st = state_mod.DashboardState({"x": lambda: {"a": 1}})
     st.refresh_once()
     st.get()["panels"]["x"]["a"] = 999
     assert st.get()["panels"]["x"]["a"] == 1               # external mutation can't poison cache
@@ -28,7 +27,7 @@ from bot.dashboard import server as server_mod
 
 
 def test_route_status_returns_json():
-    st = state_mod.DashboardState(collectors_map={"x": lambda: {"a": 1}}, interval=999)
+    st = state_mod.DashboardState({"x": lambda: {"a": 1}})
     st.refresh_once()
     status, ctype, body = server_mod.route("/api/status", st)
     assert status == 200 and "application/json" in ctype
@@ -36,14 +35,14 @@ def test_route_status_returns_json():
 
 
 def test_route_root_returns_html():
-    st = state_mod.DashboardState(collectors_map={}, interval=999)
+    st = state_mod.DashboardState({})
     status, ctype, body = server_mod.route("/", st)
     assert status == 200 and "text/html" in ctype
     assert "<html" in body.lower() and "/api/status" in body  # page polls the endpoint
 
 
 def test_route_unknown_404():
-    st = state_mod.DashboardState(collectors_map={}, interval=999)
+    st = state_mod.DashboardState({})
     status, _, _ = server_mod.route("/nope", st)
     assert status == 404
 
@@ -67,3 +66,27 @@ def test_build_collectors_map_wires_sources(monkeypatch):
     assert set(cmap) >= {"cost", "coverage", "resolved", "runs", "armed", "run_summary"}
     # each entry is callable with no args
     assert all(callable(fn) for fn in cmap.values())
+
+
+def test_per_collector_cadence():
+    calls = {"slow": 0, "fast": 0}
+    def slow():
+        calls["slow"] += 1
+        return {"available": True}
+    def fast():
+        calls["fast"] += 1
+        return {"available": True}
+    st = state_mod.DashboardState({"slow": (slow, 1000), "fast": (fast, 0)})
+    st.refresh_once()                       # force all
+    assert calls == {"slow": 1, "fast": 1}
+    st.refresh_due()                        # only elapsed collectors
+    assert calls["fast"] == 2               # interval 0 -> always due
+    assert calls["slow"] == 1               # interval 1000 -> not due yet
+
+
+def test_refresh_due_isolates_failures():
+    def boom():
+        raise RuntimeError("x")
+    st = state_mod.DashboardState({"bad": (boom, 0)})
+    st.refresh_due()
+    assert st.get()["panels"]["bad"]["available"] is False
