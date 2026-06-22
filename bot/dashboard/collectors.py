@@ -259,7 +259,10 @@ def fetch_recent_resolved(token: str, tournaments: list[str], limit: int = 8,
         entries = [cache[str(pid)] for pid in ids
                    if str(pid) in cache and isinstance(cache[str(pid)], dict)]
         entries.sort(key=lambda e: e.get("start_time") or 0, reverse=True)
-        return {"available": True, "resolved": entries[:limit], "total": len(cache)}
+        # `total` counts resolved questions we forecast — NOT len(cache): the cache
+        # is shared with the ledger (open + closed + resolved), so len(cache) would
+        # overstate the resolved count in the panel header.
+        return {"available": True, "resolved": entries[:limit], "total": len(entries)}
     except Exception as exc:  # noqa: BLE001
         return {"available": False, "error": str(exc)}
 
