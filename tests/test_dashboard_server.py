@@ -64,8 +64,12 @@ def test_build_collectors_map_wires_sources(monkeypatch):
     mod = _load_dashboard_script()
     cmap = mod.build_collectors_map()
     assert set(cmap) >= {"cost", "coverage", "resolved", "runs", "armed", "run_summary"}
-    # each entry is callable with no args
-    assert all(callable(fn) for fn in cmap.values())
+    for spec in cmap.values():
+        fn, interval = spec
+        assert callable(fn) and interval > 0
+    # Metaculus collectors poll less often than the cheap ones
+    assert cmap["resolved"][1] > cmap["cost"][1]
+    assert cmap["coverage"][1] > cmap["runs"][1]
 
 
 def test_per_collector_cadence():
