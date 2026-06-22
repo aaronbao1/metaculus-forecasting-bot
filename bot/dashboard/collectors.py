@@ -147,7 +147,7 @@ _METACULUS_POSTS = "https://www.metaculus.com/api/posts/"
 # A refresh makes ~10 Metaculus calls; the API rate-limits bursts (429). Space
 # the calls and back off once on 429. This runs in the background refresh thread,
 # so the small sleeps never block the server's request handling.
-_MIN_METACULUS_SPACING = 0.5
+_MIN_METACULUS_SPACING = 1.0
 _last_metaculus_call = 0.0
 
 
@@ -237,9 +237,9 @@ def _save_cache(path: str, data: dict) -> None:
 
 def fetch_recent_resolved(token: str, tournaments: list[str], limit: int = 8,
                           cache_path: str = _FORECAST_CACHE) -> dict:
-    """Resolved questions mopsus forecast: our value, the outcome, our score.
-    Resolved questions are immutable, so detail is fetched once and cached to disk;
-    steady-state this makes ~0 detail calls (the calls that rate-limit us)."""
+    """Resolved questions we forecast, with our value/outcome/score — read from the
+    shared forecast cache (the ledger collector is the sole detail-warmer, resolved
+    first). List calls only here, so this never adds to the cold-start detail burst."""
     if not token:
         return {"available": False, "error": "no token"}
     try:
@@ -248,20 +248,12 @@ def fetch_recent_resolved(token: str, tournaments: list[str], limit: int = 8,
         for t in tournaments:
             ids += [p["id"] for p in
                     fetch_posts(token, t, forecaster_id=303527, statuses="resolved")]
-        new = [pid for pid in ids if str(pid) not in cache]
-        for pid in new:
-            detail = fetch_post_detail(token, pid)
-            entry = extract_own_forecast(detail)
-            entry["title"] = detail.get("title")
-            cache[str(pid)] = entry
-        if new:
-            _save_cache(cache_path, cache)
         entries = [cache[str(pid)] for pid in ids
                    if str(pid) in cache and isinstance(cache[str(pid)], dict)]
         entries.sort(key=lambda e: e.get("start_time") or 0, reverse=True)
-        # `total` counts resolved questions we forecast — NOT len(cache): the cache
-        # is shared with the ledger (open + closed + resolved), so len(cache) would
-        # overstate the resolved count in the panel header.
+        # `total` counts resolved questions warmed in the cache — NOT len(cache): the
+        # cache is shared with the ledger (open + closed + resolved), so len(cache)
+        # would overstate the resolved count in the panel header.
         return {"available": True, "resolved": entries[:limit], "total": len(entries)}
     except Exception as exc:  # noqa: BLE001
         return {"available": False, "error": str(exc)}
@@ -272,7 +264,7 @@ _LEDGER_STATUSES = ["open", "closed", "resolved"]
 
 def fetch_forecast_ledger(token: str, tournaments: list[str],
                           cache_path: str = _FORECAST_CACHE,
-                          detail_budget: int = 15) -> dict:
+                          detail_budget: int = 8) -> dict:
     """Every question mopsus has forecast (all statuses), with our value + outcome.
     The inventory is built from cheap list calls every cycle; per-question detail
     (value/outcome/score) is warmed into the shared cache a bounded number per cycle,
@@ -293,9 +285,14 @@ def fetch_forecast_ledger(token: str, tournaments: list[str],
         order = {"open": 0, "closed": 1, "resolved": 2}
         items.sort(key=lambda x: (order.get(x["status"], 3), x["tournament"],
                                   (x.get("title") or "")))
-        # bounded warmup of uncached items
+        # bounded warmup of uncached items — resolved FIRST (they carry the outcome +
+        # peer score the resolved panel shows), then closed, then open. Display order
+        # (above) stays in-flight-first; only the warm order is prioritized.
+        warm_order = sorted(items, key=lambda x: (
+            {"resolved": 0, "closed": 1, "open": 2}.get(x["status"], 3),
+            x["tournament"], (x.get("title") or "")))
         fetched = 0
-        for it in items:
+        for it in warm_order:
             if fetched >= detail_budget:
                 break
             key = str(it["post_id"])

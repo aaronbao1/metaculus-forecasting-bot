@@ -211,53 +211,42 @@ def test_fetch_metaculus_coverage_builds_gap(monkeypatch):
     assert out["tournaments"]["33022"]["gap_count"] == 1
 
 
-def test_fetch_recent_resolved_maps_extractor(monkeypatch, tmp_path):
-    # lists resolved forecaster posts (ids), then fetches detail + extracts
-    def fake_fetch_posts(token, tournament, forecaster_id, statuses="open", **kw):
-        assert statuses == "resolved" and forecaster_id == 303527
-        return [{"id": 43928}] if tournament == "33022" else []
-    def fake_fetch_post_detail(token, post_id, **kw):
-        return BINARY_POST  # the resolved binary fixture from Task 3
-    monkeypatch.setattr(collectors, "fetch_posts", fake_fetch_posts)
-    monkeypatch.setattr(collectors, "fetch_post_detail", fake_fetch_post_detail)
-    out = collectors.fetch_recent_resolved("TOK", ["33022", "minibench"], limit=10,
-                                           cache_path=str(tmp_path / "rc.json"))
-    assert out["available"] is True
-    assert out["resolved"][0]["resolution"] == "yes"
-    assert out["resolved"][0]["summary"] == pytestapprox(0.8217)  # via extract_own_forecast
-    assert out["resolved"][0]["score"]["peer_score"] == pytestapprox(47.17)
-
-
-def test_fetch_recent_resolved_caches_detail_calls(monkeypatch, tmp_path):
-    cache = tmp_path / "resolved.json"
+def test_fetch_recent_resolved_reads_shared_cache(monkeypatch, tmp_path):
+    # resolved reads warmed entries from the shared cache; it does NOT fetch detail
+    cache = str(tmp_path / "fc.json")
     monkeypatch.setattr(collectors, "_MIN_METACULUS_SPACING", 0.0)
+    collectors._save_cache(cache, {"43928": {"title": "Ceasefire?", "type": "binary",
+                                             "resolution": "yes", "summary": 0.82,
+                                             "start_time": 100.0,
+                                             "score": {"peer_score": 47.2}}})
 
     def fake_posts(token, t, forecaster_id, statuses="open", **kw):
         assert statuses == "resolved" and forecaster_id == 303527
         return [{"id": 43928}] if t == "33022" else []
-
-    detail_calls = []
-    def fake_detail(token, pid, **kw):
-        detail_calls.append(pid)
-        return {"id": 43928, "title": "Ceasefire?",
-                "question": {"id": 43954, "type": "binary", "resolution": "yes",
-                             "scaling": {"range_min": None, "range_max": None, "zero_point": None},
-                             "my_forecasts": {"latest": {"forecast_values": [0.18, 0.82],
-                                                         "start_time": 100.0},
-                                              "score_data": {"peer_score": 47.2}}}}
+    def boom_detail(*a, **k):
+        raise AssertionError("resolved must not fetch detail (ledger warms the cache)")
     monkeypatch.setattr(collectors, "fetch_posts", fake_posts)
-    monkeypatch.setattr(collectors, "fetch_post_detail", fake_detail)
+    monkeypatch.setattr(collectors, "fetch_post_detail", boom_detail)
 
-    out1 = collectors.fetch_recent_resolved("TOK", ["33022", "minibench"], cache_path=str(cache))
-    assert out1["available"] is True
-    assert out1["resolved"][0]["title"] == "Ceasefire?"
-    assert out1["resolved"][0]["resolution"] == "yes"
-    assert out1["resolved"][0]["summary"] == pytestapprox(0.82)
-    assert len(detail_calls) == 1                     # fetched the one uncached id
+    out = collectors.fetch_recent_resolved("TOK", ["33022", "minibench"], cache_path=cache)
+    assert out["available"] is True and out["total"] == 1
+    assert out["resolved"][0]["title"] == "Ceasefire?"
+    assert out["resolved"][0]["resolution"] == "yes"
+    assert out["resolved"][0]["summary"] == pytestapprox(0.82)
 
-    out2 = collectors.fetch_recent_resolved("TOK", ["33022", "minibench"], cache_path=str(cache))
-    assert out2["available"] is True
-    assert len(detail_calls) == 1                     # cached -> no new detail call
+
+def test_fetch_recent_resolved_skips_uncached(monkeypatch, tmp_path):
+    # ids not yet warmed in the cache are omitted — never a detail fetch here
+    cache = str(tmp_path / "fc.json")
+    monkeypatch.setattr(collectors, "_MIN_METACULUS_SPACING", 0.0)
+    def fake_posts(token, t, forecaster_id, statuses="open", **kw):
+        return [{"id": 1}, {"id": 2}] if t == "33022" else []
+    def boom_detail(*a, **k):
+        raise AssertionError("resolved must not fetch detail")
+    monkeypatch.setattr(collectors, "fetch_posts", fake_posts)
+    monkeypatch.setattr(collectors, "fetch_post_detail", boom_detail)
+    out = collectors.fetch_recent_resolved("TOK", ["33022"], cache_path=cache)
+    assert out["available"] is True and out["total"] == 0 and out["resolved"] == []
 
 
 import json as _json
