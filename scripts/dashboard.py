@@ -40,7 +40,7 @@ def build_collectors_map() -> dict:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=int, default=8787)
-    ap.add_argument("--refresh-interval", type=float, default=60.0)
+    ap.add_argument("--refresh-interval", type=float, default=180.0)
     args = ap.parse_args(argv)
 
     state = DashboardState(build_collectors_map(), interval=args.refresh_interval)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -143,6 +144,31 @@ def parse_coverage(open_posts: list[dict], forecasted_ids: set) -> dict:
 
 _METACULUS_POSTS = "https://www.metaculus.com/api/posts/"
 
+# A refresh makes ~10 Metaculus calls; the API rate-limits bursts (429). Space
+# the calls and back off once on 429. This runs in the background refresh thread,
+# so the small sleeps never block the server's request handling.
+_MIN_METACULUS_SPACING = 0.5
+_last_metaculus_call = 0.0
+
+
+def _metaculus_get(url: str, token: str, params: dict | None = None,
+                   timeout: float = 15.0):
+    """Throttled GET vs Metaculus with a single 429 backoff-retry."""
+    global _last_metaculus_call
+    resp = None
+    for attempt in range(2):
+        gap = _MIN_METACULUS_SPACING - (time.monotonic() - _last_metaculus_call)
+        if gap > 0:
+            time.sleep(gap)
+        _last_metaculus_call = time.monotonic()
+        resp = httpx.get(url, headers={"Authorization": f"Token {token}"},
+                         params=params, timeout=timeout)
+        if resp.status_code == 429 and attempt == 0:
+            time.sleep(2.0)
+            continue
+        break
+    return resp
+
 
 def fetch_posts(token: str, tournament: str, forecaster_id: int | None,
                 statuses: str = "open", page_size: int = 100,
@@ -154,9 +180,7 @@ def fetch_posts(token: str, tournament: str, forecaster_id: int | None,
                   "limit": page_size, "offset": page * page_size}
         if forecaster_id:
             params["forecaster_id"] = forecaster_id
-        resp = httpx.get(_METACULUS_POSTS,
-                         headers={"Authorization": f"Token {token}"},
-                         params=params, timeout=timeout)
+        resp = _metaculus_get(_METACULUS_POSTS, token, params, timeout)
         if resp.status_code != 200:
             break
         batch = resp.json().get("results") or []
@@ -183,8 +207,7 @@ def fetch_metaculus_coverage(token: str, tournaments: list[str]) -> dict:
 
 def fetch_post_detail(token: str, post_id: int, timeout: float = 15.0) -> dict:
     """GET one post (detail endpoint carries my_forecasts + resolution + score)."""
-    resp = httpx.get(f"{_METACULUS_POSTS}{post_id}/",
-                     headers={"Authorization": f"Token {token}"}, timeout=timeout)
+    resp = _metaculus_get(f"{_METACULUS_POSTS}{post_id}/", token, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 

@@ -177,10 +177,25 @@ def test_fetch_posts_paginates(monkeypatch):
     def fake_get(url, headers=None, params=None, timeout=None):
         calls.append(params["offset"])
         return pages[len(calls) - 1]
+    monkeypatch.setattr(collectors, "_MIN_METACULUS_SPACING", 0.0)  # no throttle in tests
     monkeypatch.setattr(collectors.httpx, "get", fake_get)
     posts = collectors.fetch_posts("TOK", tournament="33022", forecaster_id=None)
     assert [p["id"] for p in posts] == [1, 2]
     assert calls == [0, 100, 200]  # paginated by limit=100 until empty
+
+
+def test_metaculus_get_retries_once_on_429(monkeypatch):
+    monkeypatch.setattr(collectors, "_MIN_METACULUS_SPACING", 0.0)
+    monkeypatch.setattr(collectors.time, "sleep", lambda s: None)  # don't really sleep
+    seq = [_FakeResp(429, {}), _FakeResp(200, {"results": []})]
+    calls = []
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls.append(1)
+        return seq[len(calls) - 1]
+    monkeypatch.setattr(collectors.httpx, "get", fake_get)
+    resp = collectors._metaculus_get("http://x", "TOK")
+    assert resp.status_code == 200      # recovered after one 429 retry
+    assert len(calls) == 2
 
 
 def test_fetch_metaculus_coverage_builds_gap(monkeypatch):
